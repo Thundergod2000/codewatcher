@@ -313,6 +313,29 @@ Expected: complexity ~15, warned. If above 20, blocked.
 
 ---
 
+## Stress test: dead code only
+
+Create a file where functions are defined but never used:
+
+```python
+# dead_nightmare.py
+def _internal_helper(x, y):
+    return x + y
+
+
+def legacy_cleanup_job(user_id, payload):
+    return payload
+```
+
+Expected: dead code warnings for both the unused private helper and the
+unused public function. Dead code only warns (never blocks the push).
+
+The check uses vulture under the hood and only reports items whose
+definition line is part of the current diff, so dead code you did not
+touch is not flagged.
+
+---
+
 ## Checking exit codes (for CI integration demo)
 
 ```bash

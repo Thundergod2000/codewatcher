@@ -58,9 +58,9 @@ def check_dead_code(filename: str, added_lines: list[str]) -> CheckResult:
     violations: list[Violation] = []
     unused = v.get_unused_code(min_confidence=60)
 
-    wanted = os.path.normcase(os.path.abspath(filename))
+    wanted = os.path.normcase(os.path.realpath(filename))
     for item in unused:
-        found = os.path.normcase(os.path.abspath(item.filename))
+        found = os.path.normcase(os.path.realpath(item.filename))
         if found != wanted:
             continue
         # Warn on newly added dead code; skip pre-existing dead code

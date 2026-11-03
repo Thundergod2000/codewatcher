@@ -2,7 +2,19 @@
 
 from __future__ import annotations
 import json
+import sys
 from codewatch.types import CheckResult, Severity
+
+
+def _ensure_utf8_output() -> None:
+    """Force UTF-8 on stdout so check icons render on cp1252 Windows consoles."""
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is None:
+        return
+    try:
+        reconfigure(encoding="utf-8")
+    except (ValueError, OSError):
+        pass
 
 
 def _icon(passed: bool, has_warnings: bool) -> str:
@@ -19,6 +31,7 @@ def print_results(results: dict[str, list[CheckResult]], fmt: str = "text") -> N
 
     fmt: "text" for human-readable terminal output, "json" for machine output.
     """
+    _ensure_utf8_output()
     if fmt == "json":
         _print_json(results)
     else:
