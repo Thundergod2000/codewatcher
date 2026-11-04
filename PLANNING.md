@@ -309,5 +309,104 @@ time.
 - Changing Python check behavior, thresholds, or supported Python versions.
 
 
-for testing it runs an exe file which may be flagged as dangerous by Antivirus
-it should also be able to do one full scan of the project
+
+## Phase 2 Plan: Next Steps
+
+Read the whole section before starting. Work through the milestones in order. Do not start a milestone until the previous one passes its acceptance checks. Where this plan conflicts with how the existing code is structured, follow the existing structure and note the deviation in your summary.
+
+### Goals
+
+1. Installation needs no `.exe`, no installer and no environment variable or PATH changes.
+2. Two scan modes: `check` (committed/changed files only) and `scan` (whole project).
+3. AI agents run the check before pushing code, backed by enforcement that does not rely on the agent remembering.
+4. The project is ready to open source, so contributors can add rules easily.
+
+### Principles
+
+- The core stays rule-based and predictable. Do not add LLM calls to the core.
+- Zero setup friction: a fresh clone should work with as few steps as possible.
+- Fail = blocks the push (non-zero exit). Warning = reported but exit code 0.
+- Keep default output short. It is read by AI agents, so tokens matter.
+
+---
+
+## Milestone 1: Install with no exe and no env vars
+
+- Make `pip install codewatcher` the primary install path.
+- Make `python -m codewatcher <command>` work for every command. Document and use this form everywhere, because it does not depend on PATH.
+- All settings live in a config file inside the repo. Do not require global config or environment variables.
+- Python and JS/TS/React scanning must keep working with no Node installation.
+- Optional: `codewatcher init` can write a small runner (for example `.codewatcher/run.py`) so a fresh clone works without installing the package.
+
+Acceptance checks:
+- On a clean machine with only Python installed, install and a first run succeed with no PATH or env var edits.
+- `python -m codewatcher --help` lists all commands.
+
+## Milestone 2: Two scan modes
+
+| Command | Scans | Purpose |
+|---|---|---|
+| `codewatcher check` | Only committed/changed files (current behavior, keep as default) | Gate for AI pushes |
+| `codewatcher scan` | The whole project | Health check on any repo |
+
+- Add `--base <branch>` to `check` to scan everything changed versus that branch (for example `--base main`).
+- Respect ignore paths in both modes. Skip `node_modules`, `.venv`, `dist`, `build` and similar by default.
+- The report header must state which mode ran and how many files were scanned.
+- Exit codes: `0` = pass or warnings only, `1` = at least one failure, `2` = tool or config error.
+- Add `--format json` alongside the default compact text report.
+
+Acceptance checks:
+- `check` output is unchanged for existing behavior.
+- `scan` finds issues in files that were never committed or changed.
+- Exit codes match the list above.
+
+## Milestone 3: Make AI run it before every push
+
+Ask layer (tell the agent):
+- `codewatcher init` writes a short instruction block into whichever of these files exist or are chosen: `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.github/copilot-instructions.md`.
+- The block says: run `python -m codewatcher check` before pushing and fix every failure.
+- `init` must append to existing files, never overwrite them, and must not add the block twice.
+
+Enforce layer (do not rely on the agent remembering):
+- `init` installs a git **pre-push** hook that runs `python -m codewatcher check`. A failure blocks the push.
+- Where an agent tool supports hooks (for example Claude Code), provide an optional hook that runs the check before `git push`.
+- Ship a GitHub Actions workflow that runs the same check in CI, as a backstop for `--no-verify`.
+
+Acceptance checks:
+- A push containing a failing file is blocked locally.
+- Running `init` twice does not duplicate anything.
+- CI fails on the same input that fails locally.
+
+## Milestone 4: Open-source readiness
+
+- README: what it does, a 30-second install, a sample report, and one example rule.
+- LICENSE (MIT or Apache 2.0, owner to confirm).
+- CONTRIBUTING.md: run locally, add a rule, run tests, submit a PR.
+- Documented rule format. Adding a new rule should take minutes. Include a template rule and a test for it.
+- Config file support: enable or disable rules, override severity (fail or warn), ignore paths.
+- Inline suppression that requires a reason.
+- Issue and PR templates, and a basic CI workflow that runs the test suite.
+- Create 5 to 10 well-described "good first issue" tasks (new rules, docs fixes, report formats).
+
+---
+
+## Phase 2 Feature Backlog (after Milestones 1 to 4)
+
+Priority order:
+
+1. **AI-mistake rules.** The main differentiator. Examples: leftover `console.log` or `print`, placeholder TODOs, imports missing from the dependency manifest, swallowed exceptions, hardcoded secrets, skipped tests (`.skip`), empty test assertions, large blocks of commented-out code.
+2. **Baseline mode.** Record existing issues and fail only on new ones, so `scan` is usable on old codebases.
+3. **`codewatcher explain <RULE_ID>`.** Shows why the rule exists, a bad example and a good example.
+4. **Fix prompts.** End the report with a ready-to-paste instruction for an AI agent describing exactly what to fix.
+5. **Performance.** Caching and parallel scanning.
+6. **SARIF output** for GitHub code scanning.
+7. **Rule packs** (react, python, security) that can be enabled together.
+8. **Autofix** for simple rules.
+
+Later: more languages, a VS Code extension, and an optional opt-in LLM layer using the user's own key. Keep it separate from the core.
+
+---
+
+## How to report back
+
+After each milestone, give a short summary: what changed, how you tested it, anything you skipped or changed from this plan, and any open questions. Do not start the next milestone until the acceptance checks pass.
