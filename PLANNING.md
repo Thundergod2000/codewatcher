@@ -7,8 +7,9 @@ and why. Read this before starting any feature.
 
 ## The one-line goal
 
-Ship a working CLI tool that catches bad Python code before it gets pushed
-to git, impressive enough to demo in a job interview for an AI/GenAI role.
+Ship a working CLI tool that catches bad Python and JavaScript/TypeScript
+code before it gets pushed to git, impressive enough to demo in a job
+interview for an AI/GenAI role.
 
 ---
 
@@ -24,6 +25,8 @@ These are the only things being built. Nothing else.
 - [x] pre-push hook installer (`codewatch install-hook`)
 - [x] JSON output mode (`--format json`)
 - [x] 10 passing tests
+- [x] JavaScript, TypeScript, JSX, and TSX support (offline via tree-sitter)
+- [x] 107 passing tests
 
 ### 🔨 Building next (in this order)
 
@@ -60,7 +63,7 @@ These are the only things being built. Nothing else.
 |---|---|
 | Web dashboard | Takes weeks, adds no demo value right now |
 | Database / history | Not needed until there are paying users |
-| Multi-language (JS, Java) | Python alone is enough for the demo |
+| Java / other languages | JS/TS shipped; other languages are not needed for the demo |
 | Config file support | Hard-coded defaults work fine for MVP |
 | GitHub Actions integration | Webhook deploy covers this later |
 | Architecture checks | Needs RAG + embeddings — Phase 2 |
@@ -153,3 +156,158 @@ That answer shows depth.
 
 **Recommendation:** Railway for speed. Upgrade to Fly.io if cold starts
 become a demo problem.
+
+---
+
+## Next language plan — JavaScript, TypeScript, and React
+
+**Status: implemented and tested.** Python remains fully supported with
+unchanged behavior and exit codes. This section records the plan and the
+decisions made during implementation.
+
+### Implementation summary
+
+- **Diff and dispatch:** `.js`, `.jsx`, `.ts`, and `.tsx` are parsed from
+  the same git diff as `.py`. Files are dispatched by extension; Python
+  files run the original Python checks and JS/TS files run the new
+  tree-sitter-based checks. Deleted, renamed, binary, and repeated-line
+  cases are preserved, including exact added-line numbers from diff hunk
+  headers.
+- **Parser/dependency choice:** `tree-sitter` with
+  `tree-sitter-javascript` and `tree-sitter-typescript`. These are normal
+  Python dependencies (not optional), install on Python 3.9+ from wheels,
+  and require no Node.js, npm, project scripts, or network at scan time.
+  The code supports both the `Parser(language)` API and older
+  `Language(capsule)` packages.
+- **Secrets:** same severity and reporter conventions as Python. Added
+  lines only. Supports camelCase/snake_case JS/TS assignments, placeholders,
+  comments, `process.env`, and `import.meta.env` allowlists. Hardcoded
+  credentials are `ERROR`.
+- **Complexity:** cyclomatic-style metric (base 1 + `if`, loops, `catch`,
+  `case`, ternary, `&&`/`||`/`??`). Nested functions are scored separately and
+  only functions intersecting added lines are reported. The metric is
+  comparable to radon's, so the existing thresholds are used unchanged:
+  warn above 10, block above 20. Any parse or syntax failure returns an
+  explicit skipped result.
+- **Dead code:** warnings only, for newly added declarations whose names are
+  never used elsewhere in the file. Exports, `export { name }` declarations,
+  capitalized React component names, and destructuring patterns are
+  skipped. Conservative to avoid false positives.
+- **Test presence:** recognizes `*.test.*`, `*.spec.*`, `test_*`, and
+  `tests/`, `test/`, `__tests__/`, `src/tests/`, `src/__tests__/`, plus
+  colocated tests. Test files, `*.d.ts` files, and Jest/Vitest configs are
+  skipped.
+- **Documentation:** JSDoc required for exported functions and classes,
+  including arrow-function/class-expression values assigned to exports.
+  Interfaces, type aliases, enums, class methods, private/internal
+  declarations, and pre-existing code are not flagged. Decorators and
+  TypeScript types are handled.
+- **CLI/output:** automatic language detection (no new flag), unchanged
+  text/JSON shapes, and unchanged `--no-block` behavior.
+- **Verification:** 107 unit and integration tests pass. No Node/npm or
+  subprocess is invoked by checks (covered by a regression test). E2E
+  testing in a live repo remains a manual developer step.
+
+### Known limitations
+
+- Dead-code detection only inspects the changed file and is deliberately
+  conservative.
+- Test discovery covers common conventions; unusual monorepo layouts may
+  need a test file in a recognized location.
+- No framework-specific semantics (Next.js entry points, NestJS, etc.).
+- Static analysis only; not a type checker or ESLint replacement.
+
+### Goal
+
+Extend CodeWatch Lite to review changed `.js`, `.jsx`, `.ts`, and `.tsx` files
+in the same offline, diff-focused workflow as Python, including mixed-language
+repositories. Do not require Node.js, npm, or a network connection at scan
+time.
+
+### POC goals
+
+1. Recognize JavaScript, TypeScript, JSX, and TSX files in a git diff while
+   continuing to scan Python files exactly as before.
+2. Reuse the existing result and reporting model so findings have a check
+   name, severity, line number, message, and skipped status.
+3. Implement equivalents of the five Python checks where meaningful:
+   - **Secrets:** inspect added lines and block on likely hardcoded credentials.
+   - **Complexity:** inspect complete source and report only functions touched
+     by the diff; use the existing warning/block thresholds only if the
+     selected metric is comparable.
+   - **Dead code:** warn conservatively about newly added, clearly unused
+     declarations. Avoid treating exports, framework entry points, or
+     conventionally discovered components as dead without evidence.
+   - **Test presence:** recognize common JavaScript/TypeScript test naming and
+     directories; skip test files themselves.
+   - **Documentation:** warn on newly added public APIs that lack JSDoc where
+     the language and project conventions make that check applicable.
+4. Keep checks offline and usable from the Python package installation alone.
+   Prefer a Python-accessible JavaScript/TypeScript syntax parser over
+   invoking Node-based tools. Evaluate parser and grammar package compatibility
+   with the project's Python 3.9+ floor before choosing dependencies.
+5. Add focused unit tests and a mixed-language CLI test; document the
+   supported extensions, dependency behavior, limitations, and examples.
+
+### Acceptance tests
+
+- Diff parsing includes `.js`, `.jsx`, `.ts`, and `.tsx` additions, excludes
+  unrelated extensions, and preserves rename/deletion behavior.
+- A mixed Python/JS/TS diff returns results for each supported changed file;
+  unchanged Python-only scans produce the same results and exit codes as
+  before.
+- Added-line secret fixtures cover representative JS/TS assignments and
+  safe placeholders/environment lookups; only likely secrets block.
+- Complexity fixtures cover functions and arrow functions, warning and
+  blocking thresholds, and edits outside a function; findings map to the
+  function's source line.
+- Dead-code fixtures cover unused local declarations and exported/public or
+  framework-convention declarations that must not be reported.
+- Test-presence fixtures cover common `*.test.*` / `*.spec.*` naming and
+  typical `test` / `tests` directories, plus files that should be skipped.
+- Documentation fixtures cover exported functions/classes and React
+  components with and without JSDoc, while ignoring private/internal
+  declarations according to the agreed policy.
+- Parser failures, missing files, and unsupported syntax produce an explicit
+  skipped result rather than crashing or silently passing.
+- CLI text and JSON output include JS/TS findings, preserve the current JSON
+  shape where possible, and block only for ERROR-level findings.
+- Tests run without Node/npm installed and without network access.
+
+### Suggested implementation sequence
+
+1. Confirm parser/dependency choice and the conventions/thresholds below.
+2. Extend diff parsing and file dispatch, keeping Python paths unchanged.
+3. Add JS/TS check modules using the existing `CheckResult` and `Violation`
+   types; map findings to added lines.
+4. Add unit fixtures for each check and mixed-language regression tests.
+5. Validate from a clean Python 3.9+ installation without Node, then update
+   README and TESTING instructions.
+
+### Questions for the scaffolding / implementation AI
+
+- Which Python-accessible parser and JS/TS/JSX/TSX grammars support Python
+  3.9+, install reliably on supported platforms, and work offline at scan
+  time? Are they required dependencies or an optional extra?
+- How should the scanner identify exported APIs, React components, framework
+  entry points, and other declarations that are intentionally unused?
+- What exact JS/TS cyclomatic-complexity metric and thresholds are equivalent
+  enough to Python's current radon thresholds? If not comparable, what policy
+  should apply?
+- Which test file patterns and directories should count (for example,
+  `*.test.*`, `*.spec.*`, colocated tests, and `__tests__`)?
+- Should JSDoc be required for all exports, React components only, or follow
+  existing project conventions? How should TypeScript types affect this?
+- How should unsupported syntax or parser errors be reported, and should
+  `--no-block` and JSON output behave identically for both languages?
+
+### Out of scope for this POC
+
+- Requiring or installing Node/npm, running ESLint or arbitrary project
+  scripts, network-based analysis, configuration-file support, and
+  framework-specific semantic rules beyond checks above.
+- Changing Python check behavior, thresholds, or supported Python versions.
+
+
+for testing it runs an exe file which may be flagged as dangerous by Antivirus
+it should also be able to do one full scan of the project

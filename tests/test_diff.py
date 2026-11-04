@@ -7,7 +7,7 @@ diff --git a/codewatch/scanner.py b/codewatch/scanner.py
 index abc123..def456 100644
 --- a/codewatch/scanner.py
 +++ b/codewatch/scanner.py
-@@ -1,3 +1,6 @@
+@@ -1,2 +1,5 @@
 +def new_function():
 +    pass
 +

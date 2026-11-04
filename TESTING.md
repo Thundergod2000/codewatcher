@@ -16,6 +16,7 @@ cd codewatch-lite
 # 2. Install the project in "dev mode"
 #    This means changes you make to the code take effect immediately
 #    without needing to reinstall
+#    It also installs the tree-sitter JS/TS grammars used for parsing.
 pip install -e ".[dev]"
 
 # 3. Confirm it installed
@@ -27,6 +28,10 @@ If you see the help text, setup is done.
 **What "-e" means:** Editable mode. Instead of copying your code into
 Python's packages folder, it just points there. So when you edit
 `codewatch/cli.py`, the `codewatch` command immediately uses the new code.
+
+**Node.js is not required.** JavaScript, TypeScript, JSX, and TSX are
+parsed inside Python by tree-sitter. Nothing is downloaded or executed at
+scan time.
 
 ---
 
@@ -44,10 +49,17 @@ pytest tests/test_secrets.py -v
 
 # Run just one specific test
 pytest tests/test_secrets.py::test_hardcoded_password_flagged -v
+
+# Run all JavaScript/TypeScript tests
+pytest tests/test_js_*.py tests/test_scanner.py tests/test_cli_js.py -v
 ```
 
 **What to expect:** All tests should pass. If a test fails, the output
 tells you which line failed and what the actual vs expected value was.
+
+The JS/TS tests cover diff parsing, secrets, complexity, dead code, test
+presence, JSDoc, language dispatch, parser failures, JSON/text output and
+`--no-block`. They run without Node.js or network access.
 
 ---
 
@@ -167,6 +179,83 @@ Exit code is 0 — push would be allowed.
 
 ---
 
+## Testing JavaScript / TypeScript support
+
+You can use the same temporary git repo from above. No Node.js or npm
+install is needed.
+
+### Step 1 — Add a bad TypeScript file
+
+Create `src/api.ts`:
+
+```ts
+const apiKey = "sk-abc123xyz789longkeyvalue";
+
+export function fetchUser(id: string): string {
+    return process.env.BASE_URL + id;
+}
+```
+
+Create `src/api.test.ts` only if you want to check the passing test-presence
+path. Without it you should see a test-presence warning.
+
+```bash
+git add src/api.ts
+git commit -m "add bad TypeScript code"
+codewatch scan --diff HEAD~1
+```
+
+**What you should see:**
+
+```
+FAIL  src/api.ts
+       ✗  secrets
+              ERROR   line 1: API key assignment detected — move to environment variable or secrets manager
+       ✓  complexity
+       ⚠  dead_code
+              warn    line 1: Unused variable declarator 'apiKey' — remove it or add a usage
+       ⚠  test_presence
+              warn    line 1: No test file found for api.ts — expected api.test.ts or __tests__/ variant
+       ⚠  docstrings
+              warn    line 3: Exported function 'fetchUser' has no JSDoc comment — add a description for API documentation
+```
+
+### Step 2 — Fix it
+
+```ts
+/** Fetch a user by id. */
+export function fetchUser(id: string): string {
+    return process.env.BASE_URL + id;
+}
+```
+
+```bash
+git add src/api.ts
+git commit -m "fix TypeScript issues"
+codewatch scan --diff HEAD~1
+```
+
+The secrets and JSDoc findings should be gone. Exit code is 0 when only
+warnings remain.
+
+### Step 3 — Mixed-language diff
+
+Commit a Python file and a JS/TS file together. CodeWatch lists both and
+runs only the matching language's checks for each file.
+
+### JSX / TSX
+
+The same checks apply to `.jsx` and `.tsx`. React components with
+capitalized names are treated as public API, so they are not reported as
+dead code. Exported components still need JSDoc:
+
+```tsx
+/** Renders a button. */
+export const Button = ({ label }: { label: string }) => <button>{label}</button>;
+```
+
+---
+
 ## Testing the pre-push hook
 
 ```bash
@@ -219,6 +308,14 @@ against. Create a second commit first.
 **"vulture not installed"**  
 → Run `pip install vulture` then try again.
 
+**"tree-sitter grammar for javascript not installed" or similar**
+→ Run `pip install tree-sitter-javascript tree-sitter-typescript` then try
+again. A normal `pip install -e ".[dev]"` installs these automatically.
+
+**JS/TS checks show `skip` with a syntax error reason**
+→ The tree-sitter parser found invalid JS/TS syntax. Fix the syntax error
+and scan again. Skipped is not a pass.
+
 **Tests fail with import error**
 → Run `pip install -e ".[dev]"` again from inside the project folder.
 
@@ -232,7 +329,10 @@ Before the demo, these should all pass:
 pytest tests/ -v
 # Should show: X passed, 0 failed
 
-codewatch scan --diff HEAD~1  # on a repo with bad code
+codewatch scan --diff HEAD~1  # on a repo with bad Python code
+# Should show: FAIL with errors
+
+codewatch scan --diff HEAD~1  # on a repo with bad JS/TS code
 # Should show: FAIL with errors
 
 codewatch scan --diff HEAD~1  # on a repo with clean code  
@@ -242,4 +342,4 @@ codewatch install-hook
 # Should show: ✓ pre-push hook installed
 ```
 
-If all four of these work, the demo is ready.
+If all five of these work, the demo is ready.

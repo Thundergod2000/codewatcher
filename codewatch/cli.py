@@ -11,7 +11,7 @@ from codewatch.reporter import print_results
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="codewatch",
-        description="Offline code governance for Python — catches quality issues before they reach your repo",
+        description="Offline code governance for Python, JavaScript, TypeScript, JSX and TSX — catches quality issues before they reach your repo",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -56,7 +56,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     changed_files = parse_diff(raw_diff)
 
     if not changed_files:
-        print("codewatch: no Python files changed — nothing to review")
+        print("codewatch: no supported files changed — nothing to review")
         return 0
 
     results = run_checks(changed_files)
