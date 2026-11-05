@@ -96,11 +96,11 @@ do
   else
     range="$remote_sha...$local_sha"
   fi
-  codewatch scan --diff "$range" || blocked=1
+  python -m codewatch scan --diff "$range" || blocked=1
   reviewed=1
 done
 if [ "$reviewed" -eq 0 ]; then
-  codewatch scan --diff {args.ref} || blocked=1
+  python -m codewatch scan --diff {args.ref} || blocked=1
 fi
 exit $blocked
 """

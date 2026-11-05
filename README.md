@@ -34,18 +34,21 @@ pip install codewatch-lite
 
 ## Usage
 
+Run it with `python -m codewatch` — no `codewatch.exe` or PATH changes needed.
+The installed `codewatch` command is still available as a shortcut.
+
 ```bash
 # Scan your latest commit
-codewatch scan
+python -m codewatch scan
 
 # Scan against a specific ref
-codewatch scan --diff main
+python -m codewatch scan --diff main
 
 # Install as a pre-push hook (runs automatically on every push)
-codewatch install-hook
+python -m codewatch install-hook
 
 # Get JSON output (for CI integration)
-codewatch scan --format json
+python -m codewatch scan --format json
 ```
 
 ## Example output
@@ -129,13 +132,15 @@ TypeScript type annotations do not exempt an export.
 ## Requirements
 
 - Python 3.9+
-- Git
-- `radon`, `vulture`, `tree-sitter`, `tree-sitter-javascript`, and
-  `tree-sitter-typescript` (installed automatically)
+- A Git repository (Git is only needed to push/run the hook)
+- `radon`, `vulture`, `tree-sitter`, `tree-sitter-javascript`,
+  `tree-sitter-typescript`, and `dulwich` (installed automatically)
 
 No Node.js, npm, project installation, or network access is required at
 scan time. JavaScript/TypeScript parsing runs entirely in Python via
-tree-sitter grammars.
+tree-sitter grammars. Git data is read directly from `.git` with the
+pure-Python `dulwich` library — the scanner never launches `git.exe` or
+any other executable.
 
 ## Limitations
 

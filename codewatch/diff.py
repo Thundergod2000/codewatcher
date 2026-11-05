@@ -1,9 +1,23 @@
-"""Parse git diff output into per-file changed lines."""
+"""Read git diffs in-process. No git executable is ever launched."""
 
 from __future__ import annotations
+import io
 import os
 import re
-import subprocess
+
+from dulwich import porcelain
+from dulwich.errors import (
+    CommitError,
+    NotCommitError,
+    NotGitRepository,
+    ObjectMissing,
+    RefFormatError,
+    WrongObjectException,
+)
+from dulwich.graph import find_merge_base
+from dulwich.objects import Commit, Tag
+from dulwich.objectspec import AmbiguousShortId, parse_commit, parse_object
+from dulwich.repo import Repo
 
 # Added line numbers discovered while parsing a diff, keyed by filename.
 # Checks use these for exact line mapping in real scans; unit tests that
@@ -14,34 +28,106 @@ _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 _SUPPORTED_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx")
 
+# Dulwich raises a variety of errors for bad refs, missing objects, or
+# repositories without a usable merge base. All of them mean the same
+# thing here: fall back to the staged diff.
+_DIFF_ERRORS = (
+    AmbiguousShortId,
+    CommitError,
+    KeyError,
+    NotCommitError,
+    NotGitRepository,
+    ObjectMissing,
+    OSError,
+    RefFormatError,
+    ValueError,
+    WrongObjectException,
+)
+
 
 def clear_line_number_cache() -> None:
     """Clear cached diff line numbers (used between test cases)."""
     _LINE_NUMBER_CACHE.clear()
 
 
+def _open_repo() -> Repo | None:
+    """Open the repository containing the current directory."""
+    try:
+        return Repo.discover(".")
+    except _DIFF_ERRORS:
+        return None
+
+
+def _decode(data: bytes) -> str:
+    return data.decode("utf-8", errors="surrogateescape")
+
+
+def _parse_range(ref: str) -> tuple[str, str, bool]:
+    """Split `a..b` / `a...b` into refs. Single refs diff against HEAD."""
+    if "..." in ref:
+        left, _, right = ref.partition("...")
+        return left or "HEAD", right or "HEAD", True
+    if ".." in ref:
+        left, _, right = ref.partition("..")
+        return left or "HEAD", right or "HEAD", False
+    return ref or "HEAD", "HEAD", True
+
+
+def _resolve_commit(repo: Repo, ref: str) -> Commit:
+    """Resolve branch names, hashes, and syntax like HEAD~1 to a commit."""
+    obj = parse_object(repo, ref)
+    if isinstance(obj, Tag):
+        return parse_commit(repo, obj)
+    if not isinstance(obj, Commit):
+        raise ValueError(f"{ref} is not a commit")
+    return obj
+
+
+def _diff_commits(repo: Repo, base_sha: bytes, head_sha: bytes) -> str:
+    out = io.BytesIO()
+    porcelain.diff(repo, commit=base_sha, commit2=head_sha, outstream=out)
+    return _decode(out.getvalue())
+
+
+def _staged_diff(repo: Repo) -> str:
+    out = io.BytesIO()
+    porcelain.diff(repo, staged=True, outstream=out)
+    return _decode(out.getvalue())
+
+
 def get_diff(ref: str = "HEAD~1") -> str:
-    """Return unified diff of commits in `ref`, not the working tree.
+    """Return a unified diff for `ref`, read directly from `.git`.
 
     A range (`a..b` / `a...b`) is used as-is. A single ref becomes
     `ref...HEAD` so a pre-push hook can pass the remote SHA.
+    If the ref cannot be resolved, fall back to the staged diff.
     """
-    range_spec = ref if ".." in ref else f"{ref}...HEAD"
+    repo = _open_repo()
+    if repo is None:
+        return ""
+
     try:
-        result = subprocess.run(
-            ["git", "diff", range_spec, "--unified=0"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return result.stdout
-    except subprocess.CalledProcessError:
-        result = subprocess.run(
-            ["git", "diff", "--cached", "--unified=0"],
-            capture_output=True,
-            text=True,
-        )
-        return result.stdout
+        try:
+            left_ref, right_ref, triple_dot = _parse_range(ref)
+            left_commit = _resolve_commit(repo, left_ref)
+            right_commit = _resolve_commit(repo, right_ref)
+
+            if triple_dot:
+                bases = find_merge_base(repo, [left_commit.id, right_commit.id])
+                if not bases:
+                    raise ValueError(f"no merge base for {ref}")
+                base_sha = bases[0]
+            else:
+                base_sha = left_commit.id
+
+            return _diff_commits(repo, base_sha, right_commit.id)
+        except _DIFF_ERRORS:
+            try:
+                return _staged_diff(repo)
+            except _DIFF_ERRORS:
+                return ""
+    finally:
+        repo.close()
 
 
 def parse_diff(raw_diff: str) -> dict[str, list[str]]:
@@ -155,13 +241,26 @@ def added_file_linenos(filename: str, added_lines: list[str]) -> list[int]:
 
 def get_changed_files(ref: str = "HEAD~1") -> list[str]:
     """Return list of changed .py, .js, .jsx, .ts, .tsx filenames (relative paths)."""
-    try:
-        result = subprocess.run(
-            ["git", "diff", ref, "--name-only"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return [f for f in result.stdout.splitlines() if f.endswith((".py", ".js", ".jsx", ".ts", ".tsx"))]
-    except subprocess.CalledProcessError:
+    repo = _open_repo()
+    if repo is None:
         return []
+
+    try:
+        out = io.BytesIO()
+        porcelain.diff(repo, commit=ref, outstream=out)
+        raw_diff = _decode(out.getvalue())
+    except _DIFF_ERRORS:
+        return []
+    finally:
+        repo.close()
+
+    files = []
+    for line in raw_diff.splitlines():
+        if not line.startswith("+++ "):
+            continue
+        path = line[4:]
+        if path.startswith("b/"):
+            path = path[2:]
+        if path != "/dev/null" and path.endswith(_SUPPORTED_EXTENSIONS):
+            files.append(path)
+    return files
