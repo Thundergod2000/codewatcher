@@ -71,6 +71,72 @@ These are the only things being built. Nothing else.
 
 ---
 
+## Security — non-negotiable
+
+CodeWatch must never leak secrets, execute scanned code, or let a
+malicious repo, ref, or input take over the developer machine.
+Dependencies and CI must stay current.
+
+### Rules for the CLI (Phase 1)
+
+- Never print, log, store, or send secret values. Report only the rule
+  name, file, line, and a generic message.
+- Never execute, import, or `eval` scanned code. Static analysis only.
+- Never launch an external executable at scan time. `dulwich` reads
+  `.git` in-process; keep it that way.
+- Treat the repo as untrusted: resolve paths under the repo root, reject
+  absolute paths and `..`, and refuse symlinks that escape the repo.
+- Validate and shell-escape values written into generated hooks.
+  `install-hook --ref` must not allow command injection.
+- Only write `.git/hooks/pre-push` when explicitly requested.
+- Fail closed: if the check cannot run, do not silently allow the push.
+- Keep `.env` and credential files out of git.
+
+### Dependencies and updates
+
+- Run `pip-audit` locally and in CI.
+- Use Dependabot or Renovate for weekly Python and GitHub Actions updates.
+- Test a supported Python matrix (3.9–3.14).
+- Keep `radon`, `vulture`, `tree-sitter`, its grammars, and `dulwich`
+  current.
+- Publish to PyPI with trusted publishing, 2FA, and least-privilege
+  tokens.
+- Never commit API keys, CI tokens, or credentials.
+
+### AI security (Phase 2)
+
+- Read API keys only from environment variables or a git-ignored `.env`.
+- Redact detected secrets from diffs before sending anything to the API.
+- Treat model output as data, never execute it.
+- Treat repository code as untrusted prompt input; document
+  prompt-injection limits.
+- Never log API keys or raw diffs.
+
+### Service security (Phase 3)
+
+- Verify GitHub webhook HMAC signatures.
+- Add authentication, request-size limits, timeouts, and rate limiting.
+- Do not persist diffs or secrets; redact logs.
+- Run scans in isolated workers with no shell access.
+
+### Reporting vulnerabilities
+
+- Add `SECURITY.md` with a private disclosure contact, supported versions,
+  and fix timelines.
+
+### Acceptance checks
+
+- [ ] Secret values never appear in text/JSON output or logs.
+- [ ] Regression test proves scanned code is not executed.
+- [ ] Regression test proves no external process is launched.
+- [ ] Path-traversal tests cover `../`, absolute paths, and escaping
+      symlinks.
+- [ ] Hook `--ref` injection test passes.
+- [ ] `pip-audit` passes or documents accepted exceptions.
+- [ ] CI security workflow is green.
+
+---
+
 ## Phase map — big picture
 
 ```
@@ -404,6 +470,121 @@ Priority order:
 8. **Autofix** for simple rules.
 
 Later: more languages, a VS Code extension, and an optional opt-in LLM layer using the user's own key. Keep it separate from the core.
+
+---
+
+## Additional feature suggestions (from current Lite code)
+
+These come from reviewing the current implementation. They are additive to
+the backlog above and are not duplicates of it.
+
+### Highest value (do these first)
+
+1. **Stable rule IDs and output schema version.**
+   Give every finding an ID such as `CW-SECRET-001` and include
+   `schema_version` in JSON output. This is the foundation for suppression,
+   baseline mode, `explain`, SARIF, and stable CI integrations. Today the
+   only identifier is the check name (`secrets`, `complexity`, ...), which
+   is too coarse.
+
+2. **`codewatcher doctor` and `--version`.**
+   Check Python version, required packages, tree-sitter grammars, git repo
+   discovery, hook presence, and config validity in one command. Print the
+   installed version. This makes installation problems diagnosable without
+   asking users to run Python snippets.
+
+3. **Hook lifecycle commands.**
+   Add `uninstall-hook`, `hook status`, and an idempotent `init`. Today
+   `install-hook` only writes the file; there is no way to inspect or remove
+   it cleanly.
+
+4. **Complexity delta, not just absolute complexity.**
+   The current check blocks a touched function whose absolute complexity is
+   over 20, even if the change did not increase it. Report or block only
+   when the change raises complexity by a configurable amount, while still
+   warning on absolute thresholds. This removes a common false positive on
+   legacy code.
+
+5. **Secret detection v2.**
+   Add provider-specific patterns (GitHub, Slack, Stripe, OpenAI/Anthropic,
+   AWS secret keys), entropy checks, path/hash allowlists for fixtures, and
+   scanning of `.env`, YAML, JSON, Dockerfile, and workflow files. Keep the
+   current rule that secret values are never printed.
+
+6. **Tests changed with source.**
+   The current test check only asks whether a test file exists. Warn when a
+   source file changed but no matching test file changed in the same diff.
+   This catches stale tests instead of merely missing ones.
+
+### Next
+
+7. **Nested and monorepo test discovery.**
+   Current discovery checks repo-root `tests/`, `test/`, and the source
+   directory. Add `tests/<package>/test_<name>.py`, colocated tests in
+   subpackages, and configurable patterns.
+
+8. **Dependency manifest consistency.**
+   Warn when a changed file imports a package that is not declared in
+   `pyproject.toml`, `requirements*.txt`, or `package.json`. This catches
+   the common AI-generated "works on my machine" mistake.
+
+9. **Docstring quality.**
+   The current check only detects missing docstrings. Also warn on
+   placeholder or useless docstrings (`"""TODO"""`, `"""pass"""`, one-word
+   docs) and on stale `:param` names for Python.
+
+10. **Severity policy and quiet mode.**
+    Add `--fail-on error|warning` and `--quiet` / `--summary` so CI can
+    choose whether warnings block, and AI agents get short output. Keep
+    `--no-block` for backwards compatibility.
+
+11. **GitHub Actions annotations.**
+    Emit `::error file=...,line=...::message` and `::warning ...` in
+    addition to text/JSON. This gives inline PR annotations before SARIF is
+    built.
+
+12. **Whole-project dead-code analysis.**
+    The current dead-code check only inspects the changed file. In the
+    planned `scan` mode, run vulture across the project and report unused
+    functions that the diff alone cannot see.
+
+13. **Cross-file secret allowlist.**
+    Let projects mark fixture files and directories as safe for secrets so
+    realistic test values do not block pushes.
+
+### Developer experience
+
+14. **`--staged` / pre-commit mode.**
+    Allow checking staged changes before commit, not only the push range.
+    Add an optional `install-hook --type pre-commit`.
+
+15. **Self-check in CI.**
+    Run CodeWatch against its own repository in CI. This dogfoods the tool
+    and catches regressions in the checks themselves.
+
+16. **Result caching and parallel checks.**
+    Cache per-file results by content hash and run independent file checks
+    in parallel. This matters for the planned whole-project `scan` mode.
+
+### Sequencing
+
+Start with rule IDs, `doctor`, and hook lifecycle, because suppression,
+baseline, SARIF, and explain all depend on stable IDs. Then do complexity
+delta and secret v2, because they improve signal quality the most. Add
+test-change awareness, dependency consistency, and docstring quality as
+low-cost rules. Save cross-file analysis, caching, and parallel scanning
+for the `scan` milestone.
+
+### Optional learning rewrite (Rust or Go)
+
+Python stays the shipping implementation for now. A full rewrite in Rust or
+Go is allowed later as a learning project, not as an MVP requirement.
+If we do it, the rewrite must keep the same CLI commands, check names, rule
+IDs, exit codes, JSON schema, and pre-push hook behaviour so users can switch
+without changing their setup. Choose one language, port one check at a time,
+and keep the Python version working until the new one reaches feature parity.
+Do not rewrite just to chase performance; the current tool is fast enough for
+diff-scoped checks.
 
 ---
 
