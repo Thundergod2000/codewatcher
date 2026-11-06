@@ -10,9 +10,9 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     ("AWS access key",        re.compile(r"AKIA[0-9A-Z]{16}", re.I)),
     ("AWS secret key",        re.compile(r"(?:aws.?secret|aws.?key)\s*=\s*['\"][^'\"]{20,}", re.I)),
     ("Private key block",     re.compile(r"-----BEGIN\s+(?:RSA\s+)?PRIVATE KEY-----")),
-    ("Password assignment",   re.compile(r"(?:password|passwd|pwd)\s*=\s*['\"][^'\"]{4,}['\"]", re.I)),
-    ("API key assignment",    re.compile(r"(?:api_key|apikey|api.key)\s*=\s*['\"][^'\"]{8,}['\"]", re.I)),
-    ("Secret assignment",     re.compile(r"(?:secret|token)\s*=\s*['\"][^'\"]{8,}['\"]", re.I)),
+    ("Password assignment",   re.compile(r"(?:password|passwd|pwd)(?:_?\d+)?\s*=\s*['\"][^'\"]{4,}['\"]", re.I)),
+    ("API key assignment",    re.compile(r"(?:api_key|apikey|api.key)(?:_?\d+)?\s*=\s*['\"][^'\"]{8,}['\"]", re.I)),
+    ("Secret assignment",     re.compile(r"(?:secret|token)(?:_?\d+)?\s*=\s*['\"][^'\"]{8,}['\"]", re.I)),
     ("Generic bearer token",  re.compile(r"bearer\s+[a-zA-Z0-9\-_]{20,}", re.I)),
     ("Hardcoded IP (non-local)", re.compile(
         r"\b(?!(?:127\.0\.0\.1|0\.0\.0\.0|localhost))"

@@ -36,3 +36,6 @@ Thumbs.db
 # Local env files and secrets
 .env
 .env.*
+
+# Markdown documentation
+*.md

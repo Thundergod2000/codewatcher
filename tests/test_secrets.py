@@ -28,6 +28,13 @@ def test_hardcoded_api_key_flagged():
     assert len(result.violations) == 1
 
 
+def test_numeric_suffix_flagged():
+    lines = ['password1 = "supersecret123"']
+    result = check_secrets("app.py", lines)
+    assert len(result.violations) == 1
+    assert result.violations[0].severity == Severity.ERROR
+
+
 def test_aws_key_flagged():
     lines = ["aws_access = 'AKIAIOSFODNN7EXAMPLE'"]
     result = check_secrets("app.py", lines)
