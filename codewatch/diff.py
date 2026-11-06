@@ -28,6 +28,9 @@ _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 _SUPPORTED_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx")
 
+ZERO_SHA = "0" * 40
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
 # Dulwich raises a variety of errors for bad refs, missing objects, or
 # repositories without a usable merge base. All of them mean the same
 # thing here: fall back to the staged diff.
@@ -126,6 +129,98 @@ def get_diff(ref: str = "HEAD~1") -> str:
                 return _staged_diff(repo)
             except _DIFF_ERRORS:
                 return ""
+    finally:
+        repo.close()
+
+
+def is_valid_sha(sha: str) -> bool:
+    """Return True when `sha` is a full 40-character hexadecimal object id."""
+    return isinstance(sha, str) and bool(_SHA_RE.fullmatch(sha))
+
+
+def is_zero_sha(sha: str) -> bool:
+    """Return True for the all-zero SHA git uses for a deleted/new ref."""
+    return sha == ZERO_SHA
+
+
+def _default_branch_commit(repo: Repo) -> Commit | None:
+    """Return the first resolvable default branch commit, or None."""
+    for name in ("origin/main", "origin/master", "main", "master"):
+        try:
+            return _resolve_commit(repo, name)
+        except _DIFF_ERRORS:
+            continue
+    return None
+
+
+def _merge_base(repo: Repo, first: bytes, second: bytes) -> bytes | None:
+    try:
+        bases = find_merge_base(repo, [first, second])
+    except _DIFF_ERRORS:
+        return None
+    return bases[0] if bases else None
+
+
+def _capped_base(repo: Repo, local: Commit, limit: int = 3) -> bytes | None:
+    """Walk first-parent history up to `limit` commits.
+
+    Returns None when the branch is shorter than the limit. None means
+    "diff against the empty tree", which reviews the whole (short) branch
+    including its root commit.
+    """
+    node = local
+    for _ in range(limit):
+        if not node.parents:
+            return None
+        try:
+            parent = repo.get_object(node.parents[0])
+        except _DIFF_ERRORS:
+            return None
+        if not isinstance(parent, Commit):
+            return None
+        node = parent
+    return node.id
+
+
+def get_push_diff(local_sha: str, remote_sha: str) -> str:
+    """Return the diff for one pre-push ref, or raise on unusable input.
+
+    A normal push diffs from the merge-base with the remote SHA. A new
+    branch diffs from its merge-base with the default branch. When no
+    default branch exists, only the last three commits are reviewed.
+    """
+    local_sha = (local_sha or "").lower()
+    remote_sha = (remote_sha or "").lower()
+
+    if not is_valid_sha(local_sha):
+        raise ValueError("invalid local SHA")
+    if not is_valid_sha(remote_sha):
+        raise ValueError("invalid remote SHA")
+
+    repo = _open_repo()
+    if repo is None:
+        raise RuntimeError("not a git repository")
+
+    try:
+        local = _resolve_commit(repo, local_sha)
+
+        if is_zero_sha(remote_sha):
+            default = _default_branch_commit(repo)
+            if default is not None:
+                base = _merge_base(repo, default.id, local.id)
+                if base is not None:
+                    return _diff_commits(repo, base, local.id)
+
+            capped = _capped_base(repo, local)
+            if capped is None:
+                out = io.BytesIO()
+                porcelain.diff(repo, commit2=local.id, outstream=out)
+                return _decode(out.getvalue())
+            return _diff_commits(repo, capped, local.id)
+
+        remote = _resolve_commit(repo, remote_sha)
+        base = _merge_base(repo, remote.id, local.id)
+        return _diff_commits(repo, base if base is not None else remote.id, local.id)
     finally:
         repo.close()
 

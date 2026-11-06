@@ -22,7 +22,7 @@ These are the only things being built. Nothing else.
 - [x] git diff parser — reads changed files from git
 - [x] 5 static checks: secrets, complexity, dead_code, tests, docstrings
 - [x] Terminal reporter — coloured output, PASS/WARN/FAIL
-- [x] pre-push hook installer (`codewatch install-hook`)
+- [x] pre-push hook (`codewatch install-hook`) — managed shim, chained backups, 3-commit cap
 - [x] JSON output mode (`--format json`)
 - [x] 10 passing tests
 - [x] JavaScript, TypeScript, JSX, and TSX support (offline via tree-sitter)
@@ -86,8 +86,8 @@ Dependencies and CI must stay current.
   `.git` in-process; keep it that way.
 - Treat the repo as untrusted: resolve paths under the repo root, reject
   absolute paths and `..`, and refuse symlinks that escape the repo.
-- Validate and shell-escape values written into generated hooks.
-  `install-hook --ref` must not allow command injection.
+- Keep refs, SHAs, and paths out of generated shell. All hook logic
+  runs in Python, and every SHA is validated before use.
 - Only write `.git/hooks/pre-push` when explicitly requested.
 - Fail closed: if the check cannot run, do not silently allow the push.
 - Keep `.env` and credential files out of git.
@@ -131,7 +131,7 @@ Dependencies and CI must stay current.
 - [ ] Regression test proves no external process is launched.
 - [ ] Path-traversal tests cover `../`, absolute paths, and escaping
       symlinks.
-- [ ] Hook `--ref` injection test passes.
+- [ ] Hook input validation/injection test passes.
 - [ ] `pip-audit` passes or documents accepted exceptions.
 - [ ] CI security workflow is green.
 
@@ -376,6 +376,77 @@ time.
 
 
 
+## Pre-push hook design (v0.1) — source of truth
+
+Status: implemented for v0.1. The hook is a thin managed shim; all
+decision logic lives in Python and is unit-testable.
+
+### Install
+
+`codewatch install-hook`:
+
+- Finds the real git directory with `dulwich` (handles linked worktrees,
+  where `.git` is a file).
+- Writes `<git-dir>/hooks/pre-push` with a `# codewatch-managed` marker.
+- Is idempotent: reinstalling replaces only the managed hook.
+- If a non-managed `pre-push` already exists, moves it to
+  `pre-push.codewatch-local` and chains it after CodeWatch.
+- Buffers stdin once (temp file, cleaned up with `trap`) so both hooks
+  can read it.
+- Bakes the installer's absolute `sys.executable` and runs
+  `-m codewatch hook`, so the hook works without an active virtualenv or
+  PATH changes.
+- Writes LF line endings and makes the file executable best-effort (Git
+  for Windows runs shell hooks without needing the exec bit).
+
+### Runtime
+
+Git passes one line per pushed ref on stdin:
+
+```
+<local_ref> <local_sha> <remote_ref> <remote_sha>
+```
+
+`codewatch hook`:
+
+- Skips delete pushes (`local_sha` is all zeros).
+- Validates every SHA as 40 hex characters (or all zeros) before use.
+- Normal push → `remote_sha...local_sha`.
+- New branch (`remote_sha` all zeros) → merge-base with, in order:
+  `origin/main`, `origin/master`, `main`, `master`.
+- No default branch or remote → review at most the **last 3 commits**,
+  clamped to the branch root. Never scan full history; a legacy project
+  may have thousands of commits.
+- Multiple refs → scan each and aggregate.
+- Exit codes:
+  - `0` — pass, or warnings only
+  - `1` — at least one ERROR (secrets, complexity above 20)
+  - `2` — tool or config error (fail closed)
+
+### Security
+
+- No ref, SHA, or path is interpolated into shell.
+- No external executable is launched at scan time; `dulwich` reads
+  `.git` in-process.
+- Secret values are never printed, logged, or stored.
+
+### Deferred to v0.2
+
+- `install-hook --ref` and a manual ref override.
+- `.codewatch.yml` for default branch, thresholds, skipped checks, and
+  ignore paths.
+
+### Tests
+
+- Installer: creates the hook, reinstall is idempotent, an existing hook
+  is backed up and chained, linked worktree git-dir is found.
+- Runtime: normal push, new branch with each default-branch name, no
+  default branch (3-commit cap), delete-only push, multiple refs.
+- Exit codes: warnings → `0`, ERROR → `1`, tool error → `2`.
+- Security: malicious ref/SHA input never executes.
+
+---
+
 ## Phase 2 Plan: Next Steps
 
 Read the whole section before starting. Work through the milestones in order. Do not start a milestone until the previous one passes its acceptance checks. Where this plan conflicts with how the existing code is structured, follow the existing structure and note the deviation in your summary.
@@ -434,7 +505,7 @@ Ask layer (tell the agent):
 - `init` must append to existing files, never overwrite them, and must not add the block twice.
 
 Enforce layer (do not rely on the agent remembering):
-- `init` installs a git **pre-push** hook that runs `python -m codewatcher check`. A failure blocks the push.
+- `init` installs a git **pre-push** hook that runs `python -m codewatcher check`. A failure blocks the push. The v0.1 contract (managed shim, chaining, range selection, 3-commit cap, fail-closed exit 2) is defined in "Pre-push hook design (v0.1) — source of truth".
 - Where an agent tool supports hooks (for example Claude Code), provide an optional hook that runs the check before `git push`.
 - Ship a GitHub Actions workflow that runs the same check in CI, as a backstop for `--no-verify`.
 

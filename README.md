@@ -51,6 +51,34 @@ python -m codewatch install-hook
 python -m codewatch scan --format json
 ```
 
+`scan` exits `1` when an ERROR blocks the push and `0` for pass or
+warnings only. Use `--no-block` to always exit `0`.
+
+## Pre-push hook
+
+```bash
+python -m codewatch install-hook
+```
+
+The installer writes a managed `.git/hooks/pre-push` and preserves any
+existing hook by backing it up and chaining it. On every push, CodeWatch
+reviews only the commits being pushed:
+
+- **Normal push** — diff against the remote SHA (`remote...local`).
+- **New branch** — merge-base with `origin/main`, `origin/master`,
+  `main`, or `master`.
+- **No default branch or remote** — at most the **last 3 commits**,
+  clamped to the branch root. It never scans full history, which may be
+  thousands of commits on a legacy project.
+
+Exit codes: `0` for pass or warnings only, `1` when an ERROR blocks the
+push, and `2` for a tool or config error (fail closed). The hook runs
+with the Python interpreter that installed CodeWatch, so an inactive
+virtualenv or missing PATH entry does not break it.
+
+`install-hook --ref` and `.codewatch.yml` configuration are planned for
+v0.2. The full hook contract lives in `PLANNING.md` (source of truth).
+
 ## Example output
 
 ```
@@ -58,10 +86,13 @@ FAIL  codewatch/app.py
        ✗  secrets
               ERROR   line 12: Password assignment detected — move to environment variable
        ✓  complexity
+       ✓  dead_code
+       ⚠  test_presence
+              warn    line 1: No test file found for app.py — expected test_app.py in tests/
        ⚠  docstrings
               warn    line 8: Public function 'connect' has no docstring
 
-✗  1 error(s), 2 total violation(s) across 1 file(s) — push blocked
+✗  1 error(s), 3 total violation(s) across 1 file(s) — push blocked
 ```
 
 JavaScript output uses the same format:
@@ -77,62 +108,78 @@ FAIL  src/api.ts
        ⚠  docstrings
               warn    line 4: Exported function 'fetchUser' has no JSDoc comment
 
-✗  1 error(s), 2 total violation(s) across 1 file(s) — push blocked
+✗  1 error(s), 3 total violation(s) across 1 file(s) — push blocked
 ```
 
 ## How the checks work
+
+Python and JS/TS use separate implementations, but the severity policy is
+the same for both: secrets and complexity above 20 block; everything else
+warns.
 
 ### Secrets (blocks)
 
 Runs regex patterns over added lines only. Flags likely hardcoded
 passwords, API keys, tokens, AWS credentials, JWTs, private key blocks and
 non-local IPs. Placeholders (`<your-key>`, `dummy`, `fake`) and
-environment lookups (`process.env.X`, `import.meta.env.X`, `getenv`) are
-not flagged. Comments are skipped.
+environment lookups (`os.environ`, `getenv`, `process.env.X`,
+`import.meta.env.X`) are not flagged. Full-line comments are skipped.
 
 ### Complexity (blocks above 20, warns above 10)
 
-Parses the full file with tree-sitter and measures each function,
-arrow function, and method. The metric is a cyclomatic complexity count:
-a base of 1 plus one for each `if`, loop, `catch`, `case`, ternary, and
-`&&` / `||` / `??`. This is close enough to radon's Python metric that the same
-thresholds apply. Nested functions are scored separately. Only functions
-that intersect added lines are reported.
+- **Python** — uses `radon` on the full file. Only functions whose body
+  intersects the added lines are reported.
+- **JS/TS** — uses tree-sitter to measure each function, arrow function,
+  and method with the same cyclomatic complexity style: a base of 1 plus
+  one for each `if`, loop, `catch`, `case`, ternary, and `&&` / `||` /
+  `??`. Nested functions are scored separately, and only functions that
+  intersect added lines are reported.
+
+Both languages use the same thresholds: warn above 10, block above 20.
 
 ### Dead code (warns)
 
-Warns only about newly added declarations whose names never appear
-elsewhere in the file. Exported declarations (`export ...` or
-`export { name }`), React-style capitalized component names, and
-destructuring patterns are skipped. This is deliberately conservative:
-an occasional missed dead declaration is better than noisy false
-positives.
+- **Python** — uses `vulture` (minimum confidence 60). Only newly added
+  definitions are reported; pre-existing dead code is ignored.
+- **JS/TS** — warns only about newly added declarations whose names never
+  appear elsewhere in the file. Exported declarations (`export ...` or
+  `export { name }`), React-style capitalized component names, and
+  destructuring patterns are skipped.
+
+Always a warning, never a block. This is deliberately conservative: an
+occasional missed dead declaration is better than noisy false positives.
 
 ### Test presence (warns)
 
-Recognizes common JS/TS conventions:
+- **Python** — looks for `test_<name>.py` or `<name>_test.py` in
+  `tests/`, `test/`, `src/tests/`, or next to the source file. Skips test
+  files, `__init__.py`, `setup.py`, `conftest.py`, and migration files.
+- **JS/TS** — recognizes `name.test.js`, `name.spec.ts` and JSX/TSX
+  equivalents, colocated tests, `test_*` / `test/` conventions, and
+  `tests/`, `test/`, `__tests__/`, `src/tests/`, `src/__tests__/`. Skips
+  test files, `*.d.ts` type definitions, and Jest/Vitest config files.
 
-- `name.test.js`, `name.spec.ts`, and JSX/TSX equivalents
-- colocated test files next to the source file
-- `test_*` / `test/` conventions
-- `tests/`, `test/`, `__tests__/`, `src/tests/`, `src/__tests__/`
-
-Test files themselves, `*.d.ts` type definitions, and Jest/Vitest config
-files are skipped instead of warned about.
+Always a warning, never a block.
 
 ### Documentation (warns)
 
-Requires a JSDoc block (`/** ... */`) directly above exported functions
-and classes, including arrow-function and class-expression values
-assigned to exported declarations. Private/internal declarations,
-interfaces, type aliases, enums, and individual class methods are not
-flagged. Decorators are accounted for, so JSDoc goes above the decorator.
-TypeScript type annotations do not exempt an export.
+- **Python** — public functions and classes (names not starting with `_`)
+  added in the diff must have a docstring.
+- **JS/TS** — requires a JSDoc block (`/** ... */`) directly above
+  exported functions and classes, including arrow-function and
+  class-expression values assigned to exported declarations.
+  Private/internal declarations, interfaces, type aliases, enums, and
+  individual class methods are not flagged. Decorators are accounted for,
+  so JSDoc goes above the decorator. TypeScript type annotations do not
+  exempt an export.
+
+Always a warning, never a block.
 
 ## Requirements
 
 - Python 3.9+
-- A Git repository (Git is only needed to push/run the hook)
+- A Git repository (the Git executable is only needed to push; scanning
+  reads `.git` directly)
 - `radon`, `vulture`, `tree-sitter`, `tree-sitter-javascript`,
   `tree-sitter-typescript`, and `dulwich` (installed automatically)
 
@@ -151,11 +198,15 @@ any other executable.
   need a manual test file in a recognized location.
 - Framework-specific rules (Next.js entry points, NestJS decorators, etc.)
   are out of scope.
-- Only added lines are checked; pre-existing issues are not reported.
+- Findings are limited to new or changed code; pre-existing issues are
+  not reported.
+- A new branch with no default branch or remote reviews at most the last
+  3 commits, by design.
 
-## Configuration
+## Configuration (v0.2)
 
-Add a `.codewatch.yml` to your repo root to customise thresholds:
+A `.codewatch.yml` in the repo root will customise thresholds and hook
+behaviour:
 
 ```yaml
 # .codewatch.yml
@@ -163,9 +214,19 @@ complexity:
   warn_above: 10
   block_above: 20
 
+hook:
+  default_branch: origin/main   # base used for new branches
+
 checks:
   skip:
     - dead_code      # disable a check entirely
+
+ignore:
+  - vendor/
+  - node_modules/
 ```
 
-_(config file support coming in v0.2)_
+_(`.codewatch.yml` support, including the hook default branch and the
+`--ref` override, is coming in v0.2. Until then the hook uses the built-in
+order `origin/main` → `origin/master` → `main` → `master`, then the last
+3 commits.)_
