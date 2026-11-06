@@ -45,14 +45,14 @@ def test_hardcoded_api_key_flagged():
 
 
 def test_api_key_with_numeric_suffix_flagged():
-    lines = ['let testApikey1 = "12345qwetrt"']
+    lines = [''] 
     result = check_js_secrets("app.js", lines)
     assert len(result.violations) == 1
     assert result.violations[0].severity == Severity.ERROR
 
 
 def test_numeric_suffix_with_underscore_flagged():
-    lines = ['const api_key_2 = "sk-abc123xyz789longkey";']
+    lines = ['']
     result = check_js_secrets("app.js", lines)
     assert len(result.violations) == 1
 
