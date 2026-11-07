@@ -25,14 +25,29 @@ def _run_python_checks(
     filename: str,
     added_lines: list[str],
     base_source: str | None = None,
+    warn_threshold: int | None = None,
+    error_threshold: int | None = None,
+    require_docstring_exports: bool = True,
+    require_docstring_components: bool = True,
 ) -> list[CheckResult]:
     """Run all Python checks on a file."""
     return [
         check_secrets(filename, added_lines),
-        check_complexity(filename, added_lines, base_source=base_source),
+        check_complexity(
+            filename,
+            added_lines,
+            base_source=base_source,
+            warn_threshold=warn_threshold,
+            error_threshold=error_threshold,
+        ),
         check_dead_code(filename, added_lines),
         check_test_presence(filename, added_lines),
-        check_docstrings(filename, added_lines),
+        check_docstrings(
+            filename,
+            added_lines,
+            require_exports=require_docstring_exports,
+            require_components=require_docstring_components,
+        ),
     ]
 
 
@@ -40,14 +55,29 @@ def _run_js_checks(
     filename: str,
     added_lines: list[str],
     base_source: str | None = None,
+    warn_threshold: int | None = None,
+    error_threshold: int | None = None,
+    require_docstring_exports: bool = True,
+    require_docstring_components: bool = True,
 ) -> list[CheckResult]:
     """Run all JavaScript/TypeScript checks on a file."""
     return [
         check_js_secrets(filename, added_lines),
-        check_js_complexity(filename, added_lines, base_source=base_source),
+        check_js_complexity(
+            filename,
+            added_lines,
+            base_source=base_source,
+            warn_threshold=warn_threshold,
+            error_threshold=error_threshold,
+        ),
         check_js_dead_code(filename, added_lines),
         check_js_test_presence(filename, added_lines),
-        check_js_docstrings(filename, added_lines),
+        check_js_docstrings(
+            filename,
+            added_lines,
+            require_exports=require_docstring_exports,
+            require_components=require_docstring_components,
+        ),
     ]
 
 
@@ -72,6 +102,11 @@ def run_checks(
     if config is None:
         config = load_config()
 
+    disabled = config.is_disabled
+    warn_threshold, error_threshold = config.complexity_thresholds()
+    require_docstring_exports = config.require_docstring_exports()
+    require_docstring_components = config.require_docstring_components()
+
     results: dict[str, list[CheckResult]] = {}
 
     for filename, added_lines in changed_files.items():
@@ -83,16 +118,33 @@ def run_checks(
 
         if is_python(lang):
             file_results = _run_python_checks(
-                filename, added_lines, base_source=base_source
+                filename,
+                added_lines,
+                base_source=base_source,
+                warn_threshold=warn_threshold,
+                error_threshold=error_threshold,
+                require_docstring_exports=require_docstring_exports,
+                require_docstring_components=require_docstring_components,
             )
         elif is_javascript_type(lang):
             file_results = _run_js_checks(
-                filename, added_lines, base_source=base_source
+                filename,
+                added_lines,
+                base_source=base_source,
+                warn_threshold=warn_threshold,
+                error_threshold=error_threshold,
+                require_docstring_exports=require_docstring_exports,
+                require_docstring_components=require_docstring_components,
             )
         else:
             # Unknown language - skip
             continue
 
+        file_results = [
+            result
+            for result in file_results
+            if not disabled(result.check_name)
+        ]
         file_results = apply_suppressions(filename, file_results, config)
         if baseline is not None:
             file_results = baseline.apply(filename, file_results)

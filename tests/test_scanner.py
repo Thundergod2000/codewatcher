@@ -115,3 +115,131 @@ def test_checks_run_without_spawning_processes(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", _fail)
     results = run_checks({"app.ts": ["export const add = (a: number): number => a + 1;"]})
     assert results["app.ts"]
+
+
+def test_disabled_check_is_skipped(tmp_path, monkeypatch):
+    from codewatch.config import load_config
+
+    src = tmp_path / "app.py"
+    src.write_text("def public():\n    return 1\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "codewatch.yaml").write_text("version: 1\ndisable:\n  - docstrings\n", encoding="utf-8")
+
+    config = load_config()
+    results = run_checks({"app.py": ["def public():", "    return 1"]}, config=config)
+
+    check_names = [r.check_name for r in results["app.py"]]
+    assert "docstrings" not in check_names
+    for result in results["app.py"]:
+        assert result.skipped is False or result.check_name != "docstrings"
+
+
+def test_complexity_thresholds_come_from_config(tmp_path, monkeypatch):
+    from codewatch.config import load_config
+
+    branches = 7  # complexity 8, below default warn 10 but above custom warn 5
+    lines = ["def run(x):"]
+    for i in range(branches):
+        lines.append(f"    if x == {i}:")
+        lines.append(f"        return {i}")
+    lines.append("    return -1")
+    source = "\n".join(lines)
+    src = tmp_path / "app.py"
+    src.write_text(source + "\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "codewatch.yaml").write_text(
+        "version: 1\nthresholds:\n  complexity:\n    warn: 5\n    error: 100\n",
+        encoding="utf-8",
+    )
+
+    config = load_config()
+    results = run_checks({"app.py": source.splitlines()}, config=config)
+    complexity = results["app.py"][1]
+
+    # Below custom error (100), above custom warn (5) -> warning only.
+    errors = [v for v in complexity.violations if v.severity.name == "ERROR"]
+    assert errors == []
+    warnings = [v for v in complexity.violations if v.severity.name == "WARNING"]
+    assert len(warnings) == 1
+    assert "threshold 5" in warnings[0].message
+    assert warnings[0].rule_id == "CW-COMPLEX-002"
+
+
+def test_docstrings_require_exports_false_mutes_exported_warning(tmp_path, monkeypatch):
+    from codewatch.config import load_config
+
+    src = tmp_path / "app.js"
+    src.write_text("export function fetchData() {\n    return 1;\n}\n", encoding="utf-8")
+    (tmp_path / "app.test.js").write_text("test('x', () => {});\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "codewatch.yaml").write_text(
+        "version: 1\ndocstrings:\n  require_exports: false\n", encoding="utf-8"
+    )
+
+    config = load_config()
+    results = run_checks(
+        {"app.js": ["export function fetchData() {", "    return 1;", "}"]},
+        config=config,
+    )
+    docstrings = results["app.js"][4]
+    assert docstrings.violations == []
+
+
+def test_docstrings_require_exports_true_flags_exported(tmp_path, monkeypatch):
+    from codewatch.config import load_config
+
+    src = tmp_path / "app.js"
+    src.write_text("export function fetchData() {\n    return 1;\n}\n", encoding="utf-8")
+    (tmp_path / "app.test.js").write_text("test('x', () => {});\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "codewatch.yaml").write_text(
+        "version: 1\ndocstrings:\n  require_exports: true\n", encoding="utf-8"
+    )
+
+    config = load_config()
+    results = run_checks(
+        {"app.js": ["export function fetchData() {", "    return 1;", "}"]},
+        config=config,
+    )
+    docstrings = results["app.js"][4]
+    assert docstrings.violations
+    assert docstrings.violations[0].rule_id == "CW-DOC-001"
+
+
+def test_docstrings_require_components_false_mutes_component(tmp_path, monkeypatch):
+    from codewatch.config import load_config
+
+    src = tmp_path / "Button.jsx"
+    src.write_text("export const Button = () => <button>Click</button>;\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "codewatch.yaml").write_text(
+        "version: 1\ndocstrings:\n  require_components: false\n", encoding="utf-8"
+    )
+
+    config = load_config()
+    results = run_checks(
+        {"Button.jsx": ["export const Button = () => <button>Click</button>;"]},
+        config=config,
+    )
+    docstrings = results["Button.jsx"][4]
+    assert docstrings.violations == []
+
+
+def test_docstrings_require_components_true_flags_component(tmp_path, monkeypatch):
+    from codewatch.config import load_config
+
+    src = tmp_path / "Button.jsx"
+    src.write_text("export const Button = () => <button>Click</button>;\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "codewatch.yaml").write_text(
+        "version: 1\ndocstrings:\n  require_components: true\n", encoding="utf-8"
+    )
+
+    config = load_config()
+    results = run_checks(
+        {"Button.jsx": ["export const Button = () => <button>Click</button>;"]},
+        config=config,
+    )
+    docstrings = results["Button.jsx"][4]
+    assert docstrings.violations
+    assert docstrings.violations[0].rule_id == "CW-DOC-001"

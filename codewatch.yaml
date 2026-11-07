@@ -1,4 +1,12 @@
 version: 1
+thresholds:
+  complexity:
+    warn: 10
+    error: 20
+docstrings:
+  require_exports: false
+  require_components: false
+disable: []
 allow:
   - path: "tests/**"
     checks: [secrets]

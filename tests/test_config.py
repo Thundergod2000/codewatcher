@@ -117,3 +117,71 @@ def test_invalid_config_fails_closed(tmp_path, text):
 def test_empty_file_is_empty_config(tmp_path):
     path = _write(tmp_path, "")
     assert load_config(path) == Config()
+
+
+def test_disable_parses_check_names(tmp_path):
+    path = _write(
+        tmp_path,
+        "version: 1\n"
+        "disable:\n"
+        "  - docstrings\n"
+        "  - test_presence\n",
+    )
+    config = load_config(path)
+    assert config.is_disabled("docstrings")
+    assert config.is_disabled("test_presence")
+    assert not config.is_disabled("secrets")
+
+
+def test_disable_rejects_unknown_check(tmp_path):
+    path = _write(tmp_path, "version: 1\ndisable:\n  - not_a_check\n")
+    with pytest.raises(ConfigError):
+        load_config(path)
+
+
+def test_thresholds_parse_complexity(tmp_path):
+    path = _write(
+        tmp_path,
+        "version: 1\n"
+        "thresholds:\n"
+        "  complexity:\n"
+        "    warn: 15\n"
+        "    error: 30\n",
+    )
+    config = load_config(path)
+    warn, error = config.complexity_thresholds()
+    assert (warn, error) == (15, 30)
+
+
+def test_thresholds_default_to_module_defaults(tmp_path):
+    path = _write(tmp_path, "version: 1\n")
+    config = load_config(path)
+    assert config.complexity_thresholds() == (10, 20)
+
+
+def test_thresholds_uses_defaults_for_missing_keys(tmp_path):
+    path = _write(
+        tmp_path,
+        "version: 1\n"
+        "thresholds:\n"
+        "  complexity:\n"
+        "    warn: 7\n",
+    )
+    config = load_config(path)
+    assert config.complexity_thresholds() == (7, 20)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "version: 1\nthresholds:\n  not_a_check:\n    warn: 5\n",
+        "version: 1\nthresholds:\n  complexity:\n    bogus: 5\n",
+        "version: 1\nthresholds:\n  complexity:\n    warn: not-a-number\n",
+        "version: 1\nthresholds:\n  complexity:\n    error: true\n",
+        "version: 1\nthresholds: not-a-mapping\n",
+    ],
+)
+def test_invalid_thresholds_fail_closed(tmp_path, text):
+    path = _write(tmp_path, text)
+    with pytest.raises(ConfigError):
+        load_config(path)

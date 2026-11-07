@@ -28,8 +28,15 @@ KNOWN_RULE_IDS = frozenset({
     "CW-DOC-001",
 })
 
-_TOP_LEVEL_KEYS = {"version", "allow"}
+TOP_LEVEL_KEYS = {"version", "allow", "disable", "thresholds", "docstrings"}
 _ALLOW_KEYS = {"path", "checks", "rules", "reason"}
+_THRESHOLD_KEYS = {"complexity"}
+_COMPLEXITY_THRESHOLD_KEYS = {"warn", "error"}
+_DEFAULT_COMPLEXITY_WARN = 10
+_DEFAULT_COMPLEXITY_ERROR = 20
+_DOCSTRING_KEYS = {"require_exports", "require_components"}
+_DEFAULT_REQUIRE_EXPORTS = True
+_DEFAULT_REQUIRE_COMPONENTS = True
 _GLOB_CACHE: dict[str, re.Pattern] = {}
 
 
@@ -57,11 +64,42 @@ class AllowRule:
 @dataclass
 class Config:
     allow: list[AllowRule] = field(default_factory=list)
+    disable: frozenset[str] = field(default_factory=frozenset)
+    thresholds: dict = field(default_factory=dict)
+    docstrings: dict = field(default_factory=dict)
 
     def allows(self, filename: str, check_name: str, rule_id: str) -> bool:
         return any(
             rule.matches(filename, check_name, rule_id) for rule in self.allow
         )
+
+    def is_disabled(self, check_name: str) -> bool:
+        return check_name in self.disable
+
+    def complexity_thresholds(self) -> tuple[int, int]:
+        complexity = self.thresholds.get("complexity", {}) if isinstance(
+            self.thresholds, dict
+        ) else {}
+        warn = complexity.get("warn", _DEFAULT_COMPLEXITY_WARN)
+        error = complexity.get("error", _DEFAULT_COMPLEXITY_ERROR)
+        if not isinstance(warn, int) or isinstance(warn, bool):
+            warn = _DEFAULT_COMPLEXITY_WARN
+        if not isinstance(error, int) or isinstance(error, bool):
+            error = _DEFAULT_COMPLEXITY_ERROR
+        return warn, error
+
+    def require_docstring_exports(self) -> bool:
+        return self._docstring_flag("require_exports", _DEFAULT_REQUIRE_EXPORTS)
+
+    def require_docstring_components(self) -> bool:
+        return self._docstring_flag("require_components", _DEFAULT_REQUIRE_COMPONENTS)
+
+    def _docstring_flag(self, key: str, default: bool) -> bool:
+        docstrings = self.docstrings if isinstance(self.docstrings, dict) else {}
+        value = docstrings.get(key, default)
+        if not isinstance(value, bool):
+            return default
+        return value
 
 
 def find_config(start: Path | None = None) -> Path | None:
@@ -104,7 +142,7 @@ def _parse(data, path: Path) -> Config:
     if not isinstance(data, dict):
         raise ConfigError(f"{path}: top level must be a mapping")
 
-    unknown = set(data) - _TOP_LEVEL_KEYS
+    unknown = set(data) - TOP_LEVEL_KEYS
     if unknown:
         raise ConfigError(f"{path}: unknown key(s): {', '.join(sorted(unknown))}")
 
@@ -114,7 +152,7 @@ def _parse(data, path: Path) -> Config:
             f"{path}: unsupported version {version!r} (expected 1)"
         )
 
-    raw_allow = data.get("allow", [])
+    raw_allow = data.get("allow") or []
     if not isinstance(raw_allow, list):
         raise ConfigError(f"{path}: 'allow' must be a list")
 
@@ -122,7 +160,86 @@ def _parse(data, path: Path) -> Config:
         _parse_allow(entry, index, path)
         for index, entry in enumerate(raw_allow)
     ]
-    return Config(allow=allow)
+
+    raw_disable = data.get("disable") or []
+    if not isinstance(raw_disable, list) or any(
+        not isinstance(item, str) for item in raw_disable
+    ):
+        raise ConfigError(f"{path}: 'disable' must be a list of check names")
+    unknown_checks = set(raw_disable) - KNOWN_CHECKS
+    if unknown_checks:
+        raise ConfigError(
+            f"{path}: unknown check(s) in 'disable': "
+            f"{', '.join(sorted(unknown_checks))}"
+        )
+    disable = frozenset(raw_disable)
+
+    raw_thresholds = data.get("thresholds") or {}
+    if not isinstance(raw_thresholds, dict):
+        raise ConfigError(f"{path}: 'thresholds' must be a mapping")
+    unknown_threshold_keys = set(raw_thresholds) - _THRESHOLD_KEYS
+    if unknown_threshold_keys:
+        raise ConfigError(
+            f"{path}: unknown threshold key(s): "
+            f"{', '.join(sorted(unknown_threshold_keys))}"
+        )
+    thresholds = _parse_thresholds(raw_thresholds, path)
+
+    raw_docstrings = data.get("docstrings") or {}
+    if not isinstance(raw_docstrings, dict):
+        raise ConfigError(f"{path}: 'docstrings' must be a mapping")
+    unknown_docstring_keys = set(raw_docstrings) - _DOCSTRING_KEYS
+    if unknown_docstring_keys:
+        raise ConfigError(
+            f"{path}: 'docstrings' unknown key(s): "
+            f"{', '.join(sorted(unknown_docstring_keys))}"
+        )
+    docstrings = _parse_docstrings(raw_docstrings, path)
+
+    return Config(
+        allow=allow, disable=disable, thresholds=thresholds, docstrings=docstrings
+    )
+
+
+def _parse_docstrings(raw: dict, path: Path) -> dict:
+    where = f"{path}: docstrings"
+    docstrings = {}
+    for key in _DOCSTRING_KEYS:
+        value = raw.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, bool):
+            raise ConfigError(f"{where}.{key} must be a boolean")
+        docstrings[key] = value
+    return docstrings
+
+
+def _parse_thresholds(raw: dict, path: Path) -> dict:
+    where = f"{path}: thresholds"
+    raw_complexity = raw.get("complexity") or {}
+    if not isinstance(raw_complexity, dict):
+        raise ConfigError(f"{where}.complexity must be a mapping")
+    unknown_keys = set(raw_complexity) - _COMPLEXITY_THRESHOLD_KEYS
+    if unknown_keys:
+        raise ConfigError(
+            f"{where}.complexity: unknown key(s): "
+            f"{', '.join(sorted(unknown_keys))}"
+        )
+
+    complexity = {}
+    warn = raw_complexity.get("warn")
+    if warn is None:
+        warn = _DEFAULT_COMPLEXITY_WARN
+    error = raw_complexity.get("error")
+    if error is None:
+        error = _DEFAULT_COMPLEXITY_ERROR
+    if not isinstance(warn, int) or isinstance(warn, bool):
+        raise ConfigError(f"{where}.complexity.warn must be an integer")
+    if not isinstance(error, int) or isinstance(error, bool):
+        raise ConfigError(f"{where}.complexity.error must be an integer")
+    complexity["warn"] = warn
+    complexity["error"] = error
+    return {"complexity": complexity}
 
 
 def _parse_allow(entry, index: int, path: Path) -> AllowRule:

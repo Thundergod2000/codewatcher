@@ -11,12 +11,21 @@ def _is_public(name: str) -> bool:
     return not name.startswith("_")
 
 
-def check_docstrings(filename: str, added_lines: list[str]) -> CheckResult:
+def check_docstrings(
+    filename: str,
+    added_lines: list[str],
+    require_exports: bool = True,
+    require_components: bool = True,
+) -> CheckResult:
     """
     Detect public functions and classes in added lines that lack docstrings.
 
     Reads the full file for accurate AST parsing but only flags items
     whose definition line appears in the diff.
+
+    `require_exports` requires docstrings on public APIs (default true).
+    `require_components` is accepted for signature consistency with the
+    JS check (Python has no React component concept).
     """
     if not os.path.exists(filename):
         return CheckResult(
@@ -64,6 +73,8 @@ def check_docstrings(filename: str, added_lines: list[str]) -> CheckResult:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
         if not _is_public(node.name):
+            continue
+        if not require_exports:
             continue
         if not line_is_in_diff(node.lineno):
             continue

@@ -26,6 +26,8 @@ def check_complexity(
     filename: str,
     added_lines: list[str],
     base_source: str | None = None,
+    warn_threshold: int | None = None,
+    error_threshold: int | None = None,
 ) -> CheckResult:
     """
     Measure cyclomatic complexity of functions in the changed file.
@@ -35,7 +37,13 @@ def check_complexity(
 
     When `base_source` is supplied, a function over the error threshold only
     blocks if it is new or its complexity increased. Pre-existing debt warns.
+
+    `warn_threshold` and `error_threshold` override the module defaults and
+    come from codewatch.yaml (`thresholds.complexity.warn` / `.error`).
     """
+    warn_threshold = warn_threshold if warn_threshold is not None else COMPLEXITY_THRESHOLD
+    error_threshold = error_threshold if error_threshold is not None else ERROR_THRESHOLD
+
     try:
         from radon.complexity import cc_visit
     except ImportError:
@@ -95,13 +103,13 @@ def check_complexity(
         prior = before.get(block.name) if before is not None else None
         increased = before is None or prior is None or complexity > prior
 
-        if complexity > ERROR_THRESHOLD and increased:
+        if complexity > error_threshold and increased:
             rule_id = "CW-COMPLEX-001"
             violations.append(Violation(
                 line=block.lineno,
                 message=(
                     f"{block.name}() has cyclomatic complexity {complexity} "
-                    f"(limit {ERROR_THRESHOLD}) — break it into smaller functions"
+                    f"(limit {error_threshold}) — break it into smaller functions"
                 ),
                 severity=Severity.ERROR,
                 rule_id=rule_id,
@@ -109,17 +117,17 @@ def check_complexity(
                 detail=block.name,
                 metric=complexity,
             ))
-        elif complexity > COMPLEXITY_THRESHOLD:
+        elif complexity > warn_threshold:
             rule_id = "CW-COMPLEX-002"
-            if complexity > ERROR_THRESHOLD:
+            if complexity > error_threshold:
                 message = (
                     f"{block.name}() has pre-existing cyclomatic complexity "
-                    f"{complexity} (limit {ERROR_THRESHOLD}) — not increased by this diff"
+                    f"{complexity} (limit {error_threshold}) — not increased by this diff"
                 )
             else:
                 message = (
                     f"{block.name}() has cyclomatic complexity {complexity} "
-                    f"(threshold {COMPLEXITY_THRESHOLD}) — consider simplifying"
+                    f"(threshold {warn_threshold}) — consider simplifying"
                 )
             violations.append(Violation(
                 line=block.lineno,

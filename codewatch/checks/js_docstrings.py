@@ -140,12 +140,26 @@ def _doc_anchor_line(node) -> int:
     return anchor
 
 
-def check_js_docstrings(filename: str, added_lines: list[str]) -> CheckResult:
+def _is_component_name(name: str | None) -> bool:
+    """React components are capitalized declarations."""
+    return bool(name) and name[:1].isupper()
+
+
+def check_js_docstrings(
+    filename: str,
+    added_lines: list[str],
+    require_exports: bool = True,
+    require_components: bool = True,
+) -> CheckResult:
     """
     Detect exported JS/TS functions and classes in added lines lacking JSDoc.
 
     Reads the full file for accurate parsing but only flags declarations
     whose definition line appears in the diff.
+
+    `require_exports` requires JSDoc on exported APIs (default true).
+    `require_components` requires JSDoc on capitalized React components
+    (default true).
     """
     if not os.path.exists(filename):
         return CheckResult(
@@ -203,20 +217,24 @@ def check_js_docstrings(filename: str, added_lines: list[str]) -> CheckResult:
             name = _declaration_name(node, source_bytes)
             is_public = _is_exported(node) or (name is not None and name in exported_names)
             if is_public and name is not None:
-                start_line = node.start_point[0] + 1
-                in_diff = not added_nums or start_line in added_nums
-                if in_diff and not _has_jsdoc(source_lines, _doc_anchor_line(node)):
-                    violations.append(Violation(
-                        line=start_line,
-                        message=(
-                            f"Exported {_kind_for(node)} '{name}' has no JSDoc comment — "
-                            f"add a description for API documentation"
-                        ),
-                        severity=Severity.WARNING,
-                        rule_id="CW-DOC-001",
-                        fingerprint=make_fingerprint("CW-DOC-001", filename, name),
-                        detail=name,
-                    ))
+                should_require = require_exports
+                if _is_component_name(name):
+                    should_require = should_require and require_components
+                if should_require:
+                    start_line = node.start_point[0] + 1
+                    in_diff = not added_nums or start_line in added_nums
+                    if in_diff and not _has_jsdoc(source_lines, _doc_anchor_line(node)):
+                        violations.append(Violation(
+                            line=start_line,
+                            message=(
+                                f"Exported {_kind_for(node)} '{name}' has no JSDoc comment — "
+                                f"add a description for API documentation"
+                            ),
+                            severity=Severity.WARNING,
+                            rule_id="CW-DOC-001",
+                            fingerprint=make_fingerprint("CW-DOC-001", filename, name),
+                            detail=name,
+                        ))
 
         for child in node.children:
             visit(child)
