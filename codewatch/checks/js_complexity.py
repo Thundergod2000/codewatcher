@@ -17,7 +17,7 @@ from codewatch.language import (
     is_javascript_type,
     parse_source,
 )
-from codewatch.types import CheckResult, Violation, Severity
+from codewatch.types import CheckResult, Violation, Severity, make_fingerprint
 
 COMPLEXITY_THRESHOLD = 10  # warn above this
 ERROR_THRESHOLD = 20       # block above this
@@ -92,12 +92,41 @@ def _calculate_complexity(node) -> int:
     return score
 
 
-def check_js_complexity(filename: str, added_lines: list[str]) -> CheckResult:
+def _base_complexity(base_source: str, lang: str) -> dict[str, int] | None:
+    """Map function name → highest cyclomatic complexity in the base file."""
+    tree = parse_source(base_source, lang)
+    if tree is None or tree.root_node.has_error:
+        return None
+
+    source_bytes = base_source.encode("utf-8")
+    scores: dict[str, int] = {}
+
+    def visit(node):
+        if node.type in _FUNCTION_TYPES:
+            name = _function_name(node, source_bytes)
+            score = _calculate_complexity(node)
+            scores[name] = max(scores.get(name, 0), score)
+
+        for child in node.children:
+            visit(child)
+
+    visit(tree.root_node)
+    return scores
+
+
+def check_js_complexity(
+    filename: str,
+    added_lines: list[str],
+    base_source: str | None = None,
+) -> CheckResult:
     """
     Measure cyclomatic complexity of functions in the changed JS/TS file.
 
     Uses tree-sitter — reads the file from disk for full function context.
     Only reports functions that intersect with added lines.
+
+    When `base_source` is supplied, a function over the error threshold only
+    blocks if it is new or its complexity increased. Pre-existing debt warns.
     """
     if not added_lines:
         return CheckResult(check_name="complexity", passed=True)
@@ -149,6 +178,11 @@ def check_js_complexity(filename: str, added_lines: list[str]) -> CheckResult:
     violations: list[Violation] = []
     source_bytes = source.encode("utf-8")
     added_nums = set(added_file_linenos(filename, added_lines))
+    before = (
+        _base_complexity(base_source, lang)
+        if base_source is not None
+        else None
+    )
 
     def visit(node):
         if node.type in _FUNCTION_TYPES:
@@ -163,24 +197,47 @@ def check_js_complexity(filename: str, added_lines: list[str]) -> CheckResult:
 
             complexity = _calculate_complexity(node)
             name = _function_name(node, source_bytes)
+            prior = (
+                before.get(name)
+                if before is not None and name != "<anonymous>"
+                else None
+            )
+            increased = before is None or prior is None or complexity > prior
 
-            if complexity > ERROR_THRESHOLD:
+            if complexity > ERROR_THRESHOLD and increased:
+                rule_id = "CW-COMPLEX-001"
                 violations.append(Violation(
                     line=start_line,
                     message=(
-                        f"{name}() has complexity {complexity} "
+                        f"{name}() has cyclomatic complexity {complexity} "
                         f"(limit {ERROR_THRESHOLD}) — break it into smaller functions"
                     ),
                     severity=Severity.ERROR,
+                    rule_id=rule_id,
+                    fingerprint=make_fingerprint(rule_id, filename, name),
+                    detail=name,
+                    metric=complexity,
                 ))
             elif complexity > COMPLEXITY_THRESHOLD:
+                rule_id = "CW-COMPLEX-002"
+                if complexity > ERROR_THRESHOLD:
+                    message = (
+                        f"{name}() has pre-existing cyclomatic complexity "
+                        f"{complexity} (limit {ERROR_THRESHOLD}) — not increased by this diff"
+                    )
+                else:
+                    message = (
+                        f"{name}() has cyclomatic complexity {complexity} "
+                        f"(threshold {COMPLEXITY_THRESHOLD}) — consider simplifying"
+                    )
                 violations.append(Violation(
                     line=start_line,
-                    message=(
-                        f"{name}() has complexity {complexity} "
-                        f"(threshold {COMPLEXITY_THRESHOLD}) — consider simplifying"
-                    ),
+                    message=message,
                     severity=Severity.WARNING,
+                    rule_id=rule_id,
+                    fingerprint=make_fingerprint(rule_id, filename, name),
+                    detail=name,
+                    metric=complexity,
                 ))
 
         for child in node.children:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import os
-from codewatch.types import CheckResult, Violation, Severity
+from codewatch.types import CheckResult, Violation, Severity, make_fingerprint
 
 # Folders where test files might live, relative to repo root
 _TEST_DIRS = ["tests", "test", "src/tests"]
@@ -72,6 +72,8 @@ def check_test_presence(filename: str, added_lines: list[str]) -> CheckResult:
                     f"expected test_{os.path.splitext(basename)[0]}.py in tests/"
                 ),
                 severity=Severity.WARNING,
+                rule_id="CW-TEST-001",
+                fingerprint=make_fingerprint("CW-TEST-001", filename, filename),
             )
         ],
     )

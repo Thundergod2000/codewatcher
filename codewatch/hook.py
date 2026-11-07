@@ -5,8 +5,17 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
-from codewatch.diff import get_push_diff, is_valid_sha, is_zero_sha, parse_diff
-from codewatch.reporter import print_results
+from codewatch.baseline import Baseline, BaselineError, load_baseline
+from codewatch.config import Config, ConfigError, load_config
+from codewatch.diff import (
+    get_blob_text,
+    get_push_base,
+    get_push_diff,
+    is_valid_sha,
+    is_zero_sha,
+    parse_diff,
+)
+from codewatch.reporter import print_results, print_stale_baseline
 from codewatch.scanner import run_checks, should_block
 
 EXIT_OK = 0
@@ -49,7 +58,32 @@ def parse_push_input(text: str) -> list[PushRef]:
     return refs
 
 
-def _scan_ref(ref: PushRef) -> bool:
+def _collect_base_sources(
+    ref: PushRef,
+    changed: dict[str, list[str]],
+) -> dict[str, str]:
+    """Read each changed file as it was before the push.
+
+    Delta comparison is best-effort: if the base cannot be resolved, the
+    absolute complexity thresholds still apply.
+    """
+    try:
+        base_sha = get_push_base(ref.local_sha, ref.remote_sha)
+    except Exception:
+        return {}
+
+    if not base_sha:
+        return {}
+
+    sources: dict[str, str] = {}
+    for filename in changed:
+        text = get_blob_text(base_sha, filename)
+        if text is not None:
+            sources[filename] = text
+    return sources
+
+
+def _scan_ref(ref: PushRef, config: Config, baseline: Baseline) -> bool:
     """Scan one push ref. Return True when an ERROR should block the push."""
     diff = get_push_diff(ref.local_sha, ref.remote_sha)
     changed = parse_diff(diff)
@@ -59,8 +93,17 @@ def _scan_ref(ref: PushRef) -> bool:
         return False
 
     print(f"\ncodewatch: reviewing {ref.local_ref} -> {ref.remote_ref}")
-    results = run_checks(changed)
-    print_results(results)
+    base_sources = _collect_base_sources(ref, changed)
+    results = run_checks(
+        changed,
+        config=config,
+        baseline=baseline,
+        base_sources=base_sources,
+    )
+    print_results(
+        results, mode="check", files_scanned=len(results)
+    )
+    print_stale_baseline(baseline.stale(set(changed)))
     return should_block(results)
 
 
@@ -69,6 +112,13 @@ def run_hook(stdin_text: str) -> int:
     try:
         refs = parse_push_input(stdin_text)
     except ValueError as exc:
+        print(f"codewatch: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    try:
+        config = load_config()
+        baseline = load_baseline()
+    except (ConfigError, BaselineError) as exc:
         print(f"codewatch: {exc}", file=sys.stderr)
         return EXIT_ERROR
 
@@ -81,7 +131,7 @@ def run_hook(stdin_text: str) -> int:
 
         reviewed += 1
         try:
-            if _scan_ref(ref):
+            if _scan_ref(ref, config, baseline):
                 blocked = True
         except Exception as exc:  # fail closed on any tool error
             print(

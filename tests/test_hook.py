@@ -172,6 +172,18 @@ def test_run_hook_fails_closed_on_tool_error(monkeypatch):
     assert run_hook(_push_line()) == EXIT_ERROR
 
 
+def test_run_hook_fails_closed_on_bad_config(tmp_path, monkeypatch):
+    (tmp_path / "codewatch.yaml").write_text("version: 2\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    def boom(*args):
+        raise AssertionError("scan must not run with an invalid config")
+
+    monkeypatch.setattr("codewatch.hook.get_push_diff", boom)
+
+    assert run_hook(_push_line()) == EXIT_ERROR
+
+
 def test_run_hook_skips_deleted_refs(monkeypatch):
     def boom(*args):
         raise AssertionError("deleted refs must not be scanned")

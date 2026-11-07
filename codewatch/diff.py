@@ -15,7 +15,7 @@ from dulwich.errors import (
     WrongObjectException,
 )
 from dulwich.graph import find_merge_base
-from dulwich.objects import Commit, Tag
+from dulwich.objects import Blob, Commit, Tag, Tree
 from dulwich.objectspec import AmbiguousShortId, parse_commit, parse_object
 from dulwich.repo import Repo
 
@@ -27,6 +27,12 @@ _LINE_NUMBER_CACHE: dict[str, list[int]] = {}
 _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 _SUPPORTED_EXTENSIONS = (".py", ".js", ".jsx", ".ts", ".tsx")
+
+# Directories that should never be treated as source to review.
+IGNORED_DIR_NAMES = frozenset({
+    ".git", "node_modules", ".venv", "venv", "dist", "build",
+    "__pycache__", ".next", ".output", "target",
+})
 
 ZERO_SHA = "0" * 40
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -133,6 +139,104 @@ def get_diff(ref: str = "HEAD~1") -> str:
         repo.close()
 
 
+def _base_commit_id(repo: Repo, ref: str) -> bytes | None:
+    """Resolve the base side of `ref` the same way `get_diff` does."""
+    try:
+        left_ref, right_ref, triple_dot = _parse_range(ref)
+        left_commit = _resolve_commit(repo, left_ref)
+        right_commit = _resolve_commit(repo, right_ref)
+        if triple_dot:
+            bases = find_merge_base(repo, [left_commit.id, right_commit.id])
+            return bases[0] if bases else None
+        return left_commit.id
+    except _DIFF_ERRORS:
+        try:
+            return _resolve_commit(repo, "HEAD").id
+        except _DIFF_ERRORS:
+            return None
+
+
+def get_base_commit(ref: str = "HEAD~1") -> str | None:
+    """Return the commit that `get_diff(ref)` compares against."""
+    repo = _open_repo()
+    if repo is None:
+        return None
+    try:
+        sha = _base_commit_id(repo, ref)
+        return sha.decode() if sha is not None else None
+    finally:
+        repo.close()
+
+
+def _read_blob(repo: Repo, tree_sha: bytes, path: str) -> str | None:
+    parts = [part for part in path.replace("\\", "/").split("/") if part]
+    if not parts or any(part in (".", "..") for part in parts):
+        return None
+
+    current = repo.get_object(tree_sha)
+    for part in parts:
+        if not isinstance(current, Tree):
+            return None
+        try:
+            entry = current[part.encode("utf-8", "surrogateescape")]
+        except KeyError:
+            return None
+        current = repo.get_object(entry.sha)
+
+    if isinstance(current, Blob):
+        return _decode(current.data)
+    return None
+
+
+def get_blob_text(commit_sha: str, filename: str) -> str | None:
+    """Return a file's text at `commit_sha`, or None when it did not exist."""
+    if not is_valid_sha(commit_sha):
+        return None
+
+    repo = _open_repo()
+    if repo is None:
+        return None
+    try:
+        commit = _resolve_commit(repo, commit_sha)
+        return _read_blob(repo, commit.tree, filename)
+    except _DIFF_ERRORS:
+        return None
+    finally:
+        repo.close()
+
+
+def list_tracked_files() -> list[str]:
+    """Return sorted git-tracked files with a supported extension."""
+    repo = _open_repo()
+    if repo is None:
+        return []
+
+    try:
+        index = repo.open_index()
+        paths = [
+            _decode(raw)
+            for raw in index.paths()
+            if _decode(raw).endswith(_SUPPORTED_EXTENSIONS)
+        ]
+    except _DIFF_ERRORS:
+        return []
+    finally:
+        repo.close()
+
+    return sorted(paths)
+
+
+def use_all_lines(filename: str, line_count: int) -> None:
+    """Treat every line in `filename` as added (used for whole-project scans)."""
+    _LINE_NUMBER_CACHE[filename] = list(range(1, line_count + 1))
+
+
+def is_ignored_path(filename: str) -> bool:
+    """Return True when `filename` lives under an ignored directory."""
+    parts = [part for part in filename.replace("\\", "/").split("/") if part]
+    return any(part in IGNORED_DIR_NAMES for part in parts)
+
+
 def is_valid_sha(sha: str) -> bool:
     """Return True when `sha` is a full 40-character hexadecimal object id."""
     return isinstance(sha, str) and bool(_SHA_RE.fullmatch(sha))
@@ -221,6 +325,42 @@ def get_push_diff(local_sha: str, remote_sha: str) -> str:
         remote = _resolve_commit(repo, remote_sha)
         base = _merge_base(repo, remote.id, local.id)
         return _diff_commits(repo, base if base is not None else remote.id, local.id)
+    finally:
+        repo.close()
+
+
+def get_push_base(local_sha: str, remote_sha: str) -> str | None:
+    """Return the base commit for one pre-push ref, mirroring get_push_diff.
+
+    None means the diff is against the empty tree (new branch with fewer than
+    three commits), so every function is treated as new.
+    """
+    local_sha = (local_sha or "").lower()
+    remote_sha = (remote_sha or "").lower()
+
+    if not is_valid_sha(local_sha) or not is_valid_sha(remote_sha):
+        raise ValueError("invalid SHA")
+
+    repo = _open_repo()
+    if repo is None:
+        raise RuntimeError("not a git repository")
+
+    try:
+        local = _resolve_commit(repo, local_sha)
+
+        if is_zero_sha(remote_sha):
+            default = _default_branch_commit(repo)
+            if default is not None:
+                base = _merge_base(repo, default.id, local.id)
+                if base is not None:
+                    return base.decode()
+
+            capped = _capped_base(repo, local)
+            return capped.decode() if capped is not None else None
+
+        remote = _resolve_commit(repo, remote_sha)
+        base = _merge_base(repo, remote.id, local.id)
+        return (base if base is not None else remote.id).decode()
     finally:
         repo.close()
 

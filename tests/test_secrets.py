@@ -29,7 +29,8 @@ def test_hardcoded_api_key_flagged():
 
 
 def test_numeric_suffix_flagged():
-    lines = ['']
+    name = "password2"
+    lines = [f'{name} = "supersecret123"']
     result = check_secrets("app.py", lines)
     assert len(result.violations) == 1
     assert result.violations[0].severity == Severity.ERROR

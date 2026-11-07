@@ -3,18 +3,18 @@
 from __future__ import annotations
 import re
 from codewatch.diff import added_file_linenos
-from codewatch.types import CheckResult, Violation, Severity
+from codewatch.types import CheckResult, Violation, Severity, make_fingerprint
 
 # Patterns that indicate a hardcoded secret
-_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("AWS access key",        re.compile(r"AKIA[0-9A-Z]{16}", re.I)),
-    ("AWS secret key",        re.compile(r"(?:aws.?secret|aws.?key)\s*=\s*['\"][^'\"]{20,}", re.I)),
-    ("Private key block",     re.compile(r"-----BEGIN\s+(?:RSA\s+)?PRIVATE KEY-----")),
-    ("Password assignment",   re.compile(r"(?:password|passwd|pwd)(?:_?\d+)?\s*=\s*['\"][^'\"]{4,}['\"]", re.I)),
-    ("API key assignment",    re.compile(r"(?:api_key|apikey|api.key)(?:_?\d+)?\s*=\s*['\"][^'\"]{8,}['\"]", re.I)),
-    ("Secret assignment",     re.compile(r"(?:secret|token)(?:_?\d+)?\s*=\s*['\"][^'\"]{8,}['\"]", re.I)),
-    ("Generic bearer token",  re.compile(r"bearer\s+[a-zA-Z0-9\-_]{20,}", re.I)),
-    ("Hardcoded IP (non-local)", re.compile(
+_PATTERNS: list[tuple[str, str, re.Pattern]] = [
+    ("CW-SECRET-001", "AWS access key",        re.compile(r"AKIA[0-9A-Z]{16}", re.I)),
+    ("CW-SECRET-002", "AWS secret key",        re.compile(r"(?:aws.?secret|aws.?key)\s*=\s*['\"][^'\"]{20,}", re.I)),
+    ("CW-SECRET-003", "Private key block",     re.compile(r"-----BEGIN\s+(?:RSA\s+)?PRIVATE KEY-----")),
+    ("CW-SECRET-004", "Password assignment",   re.compile(r"(?:password|passwd|pwd)(?:_?\d+)?\s*=\s*['\"][^'\"]{4,}['\"]", re.I)),
+    ("CW-SECRET-005", "API key assignment",    re.compile(r"(?:api_key|apikey|api.key)(?:_?\d+)?\s*=\s*['\"][^'\"]{8,}['\"]", re.I)),
+    ("CW-SECRET-006", "Secret assignment",     re.compile(r"(?:secret|token)(?:_?\d+)?\s*=\s*['\"][^'\"]{8,}['\"]", re.I)),
+    ("CW-SECRET-007", "Generic bearer token",  re.compile(r"bearer\s+[a-zA-Z0-9\-_]{20,}", re.I)),
+    ("CW-SECRET-008", "Hardcoded IP (non-local)", re.compile(
         r"\b(?!(?:127\.0\.0\.1|0\.0\.0\.0|localhost))"
         r"(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b"
     )),
@@ -43,12 +43,14 @@ def check_secrets(filename: str, added_lines: list[str]) -> CheckResult:
         if _ALLOWLIST.search(stripped):
             continue
 
-        for label, pattern in _PATTERNS:
+        for rule_id, label, pattern in _PATTERNS:
             if pattern.search(stripped):
                 violations.append(Violation(
                     line=linenos[i],
                     message=f"{label} detected — move to environment variable or secrets manager",
                     severity=Severity.ERROR,
+                    rule_id=rule_id,
+                    fingerprint=make_fingerprint(rule_id, filename, stripped),
                 ))
                 break
 

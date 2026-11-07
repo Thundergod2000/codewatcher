@@ -3,7 +3,7 @@
 import json
 from types import SimpleNamespace
 
-from codewatch.cli import cmd_scan
+from codewatch.cli import cmd_check
 
 
 def _diff_for(path: str, added_lines: list[str]) -> str:
@@ -17,17 +17,19 @@ def _diff_for(path: str, added_lines: list[str]) -> str:
     )
 
 
-def _run_scan(monkeypatch, diff: str, fmt: str = "text", no_block: bool = False) -> int:
+def _run_check(
+    monkeypatch, diff: str, fmt: str = "text", no_block: bool = False
+) -> int:
     monkeypatch.setattr("codewatch.cli.get_diff", lambda ref: diff)
-    args = SimpleNamespace(diff="HEAD~1", format=fmt, no_block=no_block)
-    return cmd_scan(args)
+    args = SimpleNamespace(base=None, format=fmt, no_block=no_block)
+    return cmd_check(args)
 
 
 def test_js_secret_fails_in_text_output(tmp_path, monkeypatch, capsys):
     (tmp_path / "app.js").write_text('const apiKey = "sk-abc123xyz789longkey";\n', encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    code = _run_scan(monkeypatch, _diff_for("app.js", ['const apiKey = "sk-abc123xyz789longkey";']))
+    code = _run_check(monkeypatch, _diff_for("app.js", ['const apiKey = "sk-abc123xyz789longkey";']))
 
     output = capsys.readouterr().out
     assert code == 1
@@ -42,7 +44,7 @@ def test_js_secret_with_no_block_exits_zero(tmp_path, monkeypatch, capsys):
     (tmp_path / "app.js").write_text('const apiKey = "sk-abc123xyz789longkey";\n', encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    code = _run_scan(
+    code = _run_check(
         monkeypatch,
         _diff_for("app.js", ['const apiKey = "sk-abc123xyz789longkey";']),
         no_block=True,
@@ -57,7 +59,7 @@ def test_json_output_shape_for_js(tmp_path, monkeypatch, capsys):
     (tmp_path / "app.js").write_text('const apiKey = "sk-abc123xyz789longkey";\n', encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    code = _run_scan(
+    code = _run_check(
         monkeypatch,
         _diff_for("app.js", ['const apiKey = "sk-abc123xyz789longkey";']),
         fmt="json",
@@ -66,8 +68,9 @@ def test_json_output_shape_for_js(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     payload = json.loads(output)
     assert code == 1
-    assert list(payload) == ["app.js"]
-    checks = payload["app.js"]
+    assert payload["schema_version"] == 1
+    assert list(payload["files"]) == ["app.js"]
+    checks = payload["files"]["app.js"]
     assert [c["check"] for c in checks] == [
         "secrets",
         "complexity",
@@ -76,12 +79,19 @@ def test_json_output_shape_for_js(tmp_path, monkeypatch, capsys):
         "docstrings",
     ]
     for check in checks:
-        assert set(check) == {"check", "passed", "skipped", "skip_reason", "violations"}
+        assert set(check) == {
+            "check", "passed", "skipped", "skip_reason", "suppressed", "violations",
+        }
         for violation in check["violations"]:
-            assert set(violation) == {"line", "severity", "message"}
+            assert set(violation) == {
+                "line", "severity", "message", "rule_id", "fingerprint",
+            }
+            assert violation["rule_id"].startswith("CW-")
+            assert violation["fingerprint"].startswith("sha256:")
     secrets = checks[0]
     assert secrets["passed"] is False
     assert secrets["violations"][0]["severity"] == "error"
+    assert secrets["violations"][0]["rule_id"] == "CW-SECRET-005"
 
 
 def test_mixed_python_and_js_diff_reports_both(tmp_path, monkeypatch, capsys):
@@ -93,13 +103,13 @@ def test_mixed_python_and_js_diff_reports_both(tmp_path, monkeypatch, capsys):
         _diff_for("app.py", ['password = "supersecret123"'])
         + _diff_for("app.js", ['const token = "abcdefghijklmnop";'])
     )
-    code = _run_scan(monkeypatch, diff, fmt="json")
+    code = _run_check(monkeypatch, diff, fmt="json")
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 1
-    assert set(payload) == {"app.py", "app.js"}
-    assert payload["app.py"][0]["violations"]
-    assert payload["app.js"][0]["violations"]
+    assert set(payload["files"]) == {"app.py", "app.js"}
+    assert payload["files"]["app.py"][0]["violations"]
+    assert payload["files"]["app.js"][0]["violations"]
 
 
 def test_clean_js_file_passes(tmp_path, monkeypatch, capsys):
@@ -119,7 +129,7 @@ def test_clean_js_file_passes(tmp_path, monkeypatch, capsys):
         "    return process.env.API_URL;",
         "}",
     ]
-    code = _run_scan(monkeypatch, _diff_for("app.js", added))
+    code = _run_check(monkeypatch, _diff_for("app.js", added))
 
     output = capsys.readouterr().out
     assert code == 0
@@ -136,7 +146,7 @@ def test_no_supported_files_changed(tmp_path, monkeypatch, capsys):
         "+# hello\n"
     )
 
-    code = _run_scan(monkeypatch, diff)
+    code = _run_check(monkeypatch, diff)
 
     output = capsys.readouterr().out
     assert code == 0
@@ -147,14 +157,14 @@ def test_parser_failure_reports_skipped(tmp_path, monkeypatch, capsys):
     (tmp_path / "broken.js").write_text("export function broken( { return 1;\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    code = _run_scan(
+    code = _run_check(
         monkeypatch,
         _diff_for("broken.js", ["export function broken( { return 1;"]),
         fmt="json",
     )
 
     payload = json.loads(capsys.readouterr().out)
-    checks = {c["check"]: c for c in payload["broken.js"]}
+    checks = {c["check"]: c for c in payload["files"]["broken.js"]}
     assert code == 0  # skipped checks do not block
     assert checks["complexity"]["skipped"] is True
     assert "syntax" in checks["complexity"]["skip_reason"]

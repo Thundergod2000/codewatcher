@@ -3,7 +3,7 @@
 from __future__ import annotations
 import os
 import tempfile
-from codewatch.types import CheckResult, Violation, Severity
+from codewatch.types import CheckResult, Violation, Severity, make_fingerprint
 
 
 def check_dead_code(filename: str, added_lines: list[str]) -> CheckResult:
@@ -70,6 +70,9 @@ def check_dead_code(filename: str, added_lines: list[str]) -> CheckResult:
             line=item.first_lineno,
             message=f"Unused {item.typ} '{item.name}' — remove it or add a usage",
             severity=Severity.WARNING,
+            rule_id="CW-DEAD-001",
+            fingerprint=make_fingerprint("CW-DEAD-001", filename, item.name),
+            detail=item.name,
         ))
 
     return CheckResult(

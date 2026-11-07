@@ -15,7 +15,7 @@ from codewatch.language import (
     is_javascript_type,
     parse_source,
 )
-from codewatch.types import CheckResult, Violation, Severity
+from codewatch.types import CheckResult, Violation, Severity, make_fingerprint
 
 _DECLARATION_TYPES = {
     "function_declaration",
@@ -187,6 +187,9 @@ def check_js_dead_code(filename: str, added_lines: list[str]) -> CheckResult:
             line=line,
             message=f"Unused {label} '{name}' — remove it or add a usage",
             severity=Severity.WARNING,
+            rule_id="CW-DEAD-001",
+            fingerprint=make_fingerprint("CW-DEAD-001", filename, name),
+            detail=name,
         ))
 
     return CheckResult(

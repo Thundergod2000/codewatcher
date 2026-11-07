@@ -10,10 +10,28 @@ from pathlib import Path
 from dulwich.errors import NotGitRepository
 from dulwich.repo import Repo
 
-from codewatch.diff import get_diff, parse_diff
+from codewatch.baseline import (
+    BASELINE_FILENAME,
+    BaselineError,
+    collect_project_files,
+    entries_from_results,
+    load_baseline,
+    write_baseline,
+)
+from codewatch.config import ConfigError, load_config
+from codewatch.diff import (
+    get_base_commit,
+    get_blob_text,
+    get_diff,
+    parse_diff,
+)
 from codewatch.hook import run_hook
 from codewatch.scanner import run_checks, should_block
-from codewatch.reporter import print_results, _ensure_utf8_output
+from codewatch.reporter import (
+    _ensure_utf8_output,
+    print_results,
+    print_stale_baseline,
+)
 
 _HOOK_MARKER = "# codewatch-managed"
 _HOOK_BACKUP = "pre-push.codewatch-local"
@@ -26,13 +44,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # codewatch scan
-    scan = sub.add_parser("scan", help="Scan a git diff for quality issues")
-    scan.add_argument(
-        "--diff",
-        default="HEAD~1",
+    # codewatch check — diff gate (committed/changed files only)
+    check = sub.add_parser(
+        "check", help="Scan committed/changed files before a push (default gate)"
+    )
+    check.add_argument(
+        "--base",
+        default=None,
         metavar="REF",
-        help="Git ref to diff against (default: HEAD~1)",
+        help="Branch to diff against (default: HEAD~1)",
+    )
+    check.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text)",
+    )
+    check.add_argument(
+        "--no-block",
+        action="store_true",
+        help="Always exit 0, even on errors (useful in warn-only mode)",
+    )
+
+    # codewatch scan — whole-project health check
+    scan = sub.add_parser(
+        "scan", help="Scan the whole project for quality issues"
     )
     scan.add_argument(
         "--format",
@@ -45,6 +81,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Always exit 0, even on errors (useful in warn-only mode)",
     )
+
+    # codewatch baseline write / update
+    baseline = sub.add_parser(
+        "baseline",
+        help="Record accepted findings so only new issues are reported",
+    )
+    baseline_sub = baseline.add_subparsers(dest="baseline_action", required=True)
+    for action, text in (
+        ("write", "Write a new baseline file"),
+        ("update", "Rewrite the baseline file from the current code"),
+    ):
+        write = baseline_sub.add_parser(action, help=text)
+        write.add_argument(
+            "--diff",
+            default=None,
+            metavar="REF",
+            help="Baseline only this diff (default: whole project)",
+        )
 
     # codewatch install-hook
     sub.add_parser(
@@ -61,8 +115,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def cmd_scan(args: argparse.Namespace) -> int:
-    raw_diff = get_diff(args.diff)
+def _collect_base_sources(
+    base_sha: str | None,
+    changed_files: dict[str, list[str]],
+) -> dict[str, str]:
+    """Read each changed file as it was at `base_sha`."""
+    if not base_sha:
+        return {}
+
+    sources: dict[str, str] = {}
+    for filename in changed_files:
+        text = get_blob_text(base_sha, filename)
+        if text is not None:
+            sources[filename] = text
+    return sources
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    """Diff-scanned gate over committed/changed files (pre-push behaviour)."""
+    try:
+        config = load_config()
+        baseline = load_baseline()
+    except (ConfigError, BaselineError) as exc:
+        print(f"codewatch: {exc}", file=sys.stderr)
+        return 2
+
+    ref = f"{args.base}...HEAD" if args.base else "HEAD~1"
+    raw_diff = get_diff(ref)
 
     if not raw_diff.strip():
         print("codewatch: no diff found — nothing to review")
@@ -74,13 +153,86 @@ def cmd_scan(args: argparse.Namespace) -> int:
         print("codewatch: no supported files changed — nothing to review")
         return 0
 
-    results = run_checks(changed_files)
-    print_results(results, fmt=args.format)
+    base_sources = _collect_base_sources(get_base_commit(ref), changed_files)
+    results = run_checks(
+        changed_files,
+        config=config,
+        baseline=baseline,
+        base_sources=base_sources,
+    )
+    print_results(results, fmt=args.format, mode="check", files_scanned=len(results))
+    print_stale_baseline(baseline.stale(set(changed_files)))
 
     if args.no_block:
         return 0
 
     return 1 if should_block(results) else 0
+
+
+def cmd_scan(args: argparse.Namespace) -> int:
+    """Whole-project health check."""
+    try:
+        config = load_config()
+        baseline = load_baseline()
+    except (ConfigError, BaselineError) as exc:
+        print(f"codewatch: {exc}", file=sys.stderr)
+        return 2
+
+    changed_files = collect_project_files()
+
+    if not changed_files:
+        print("codewatch: no supported files found — nothing to scan")
+        return 0
+
+    results = run_checks(changed_files, config=config, baseline=baseline)
+    print_results(
+        results, fmt=args.format, mode="scan", files_scanned=len(results)
+    )
+    print_stale_baseline(baseline.stale(set(changed_files)))
+
+    if args.no_block:
+        return 0
+
+    return 1 if should_block(results) else 0
+
+
+def cmd_baseline(args: argparse.Namespace) -> int:
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        print(f"codewatch: {exc}", file=sys.stderr)
+        return 2
+
+    if args.diff:
+        try:
+            raw_diff = get_diff(args.diff)
+            changed_files = parse_diff(raw_diff)
+        except Exception as exc:
+            print(f"codewatch: could not read diff: {exc}", file=sys.stderr)
+            return 2
+
+        if not changed_files:
+            print("codewatch: no supported files changed — nothing to baseline")
+            return 0
+    else:
+        changed_files = collect_project_files()
+        if not changed_files:
+            print("codewatch: no supported files found — nothing to baseline")
+            return 0
+
+    try:
+        results = run_checks(changed_files, config=config)
+        entries = entries_from_results(results)
+        existing = load_baseline()
+        path = existing.path or (Path.cwd() / BASELINE_FILENAME)
+        write_baseline(path, entries)
+    except BaselineError as exc:
+        print(f"codewatch: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"✓  baseline written: {len(entries)} entry(ies) in {path}")
+    print("   Review and commit this file. CI must never update it.")
+    return 0
 
 
 def _find_git_dir() -> str | None:
@@ -198,8 +350,12 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.command == "scan":
+    if args.command == "check":
+        sys.exit(cmd_check(args))
+    elif args.command == "scan":
         sys.exit(cmd_scan(args))
+    elif args.command == "baseline":
+        sys.exit(cmd_baseline(args))
     elif args.command == "install-hook":
         sys.exit(cmd_install_hook(args))
     elif args.command == "hook":

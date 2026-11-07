@@ -15,7 +15,7 @@ from codewatch.language import (
     is_javascript_type,
     parse_source,
 )
-from codewatch.types import CheckResult, Violation, Severity
+from codewatch.types import CheckResult, Violation, Severity, make_fingerprint
 
 _FUNCTION_OR_CLASS_TYPES = {
     "function_declaration",
@@ -213,6 +213,9 @@ def check_js_docstrings(filename: str, added_lines: list[str]) -> CheckResult:
                             f"add a description for API documentation"
                         ),
                         severity=Severity.WARNING,
+                        rule_id="CW-DOC-001",
+                        fingerprint=make_fingerprint("CW-DOC-001", filename, name),
+                        detail=name,
                     ))
 
         for child in node.children:

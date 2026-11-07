@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import os
-from codewatch.types import CheckResult, Violation, Severity
+from codewatch.types import CheckResult, Violation, Severity, make_fingerprint
 
 # Test file patterns
 _TEST_PATTERNS = [
@@ -115,6 +115,8 @@ def check_js_test_presence(filename: str, added_lines: list[str]) -> CheckResult
                     f"or __tests__/ variant"
                 ),
                 severity=Severity.WARNING,
+                rule_id="CW-TEST-001",
+                fingerprint=make_fingerprint("CW-TEST-001", filename, filename),
             )
         ],
     )

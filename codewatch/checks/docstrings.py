@@ -3,7 +3,7 @@
 from __future__ import annotations
 import ast
 import os
-from codewatch.types import CheckResult, Violation, Severity
+from codewatch.types import CheckResult, Violation, Severity, make_fingerprint
 
 
 def _is_public(name: str) -> bool:
@@ -83,6 +83,9 @@ def check_docstrings(filename: str, added_lines: list[str]) -> CheckResult:
                     f"add a one-line description of what it does"
                 ),
                 severity=Severity.WARNING,
+                rule_id="CW-DOC-001",
+                fingerprint=make_fingerprint("CW-DOC-001", filename, node.name),
+                detail=node.name,
             ))
 
     return CheckResult(
