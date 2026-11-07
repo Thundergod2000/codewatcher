@@ -1,0 +1,5 @@
+version: 1
+allow:
+  - path: "tests/**"
+    checks: [secrets]
+    reason: "test fixtures intentionally use fake credentials"
