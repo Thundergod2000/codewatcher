@@ -181,7 +181,10 @@ def _read_blob(repo: Repo, tree_sha: bytes, path: str) -> str | None:
             entry = current[part.encode("utf-8", "surrogateescape")]
         except KeyError:
             return None
-        current = repo.get_object(entry.sha)
+        if not isinstance(entry, tuple) or len(entry) != 2:
+            return None
+        _, sha = entry
+        current = repo.get_object(sha)
 
     if isinstance(current, Blob):
         return _decode(current.data)
