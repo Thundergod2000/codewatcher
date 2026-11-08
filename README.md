@@ -4,13 +4,15 @@
 Offline, deterministic, no LLM, no network, no Node.js.
 
 ![CodeWatch blocking a push that contains an API key](demo.gif)
-<!-- TODO: add demo.gif when ready -->
 
 ```bash
-pip install codewatch-lite
+git clone https://github.com/<you>/codewatch-lite
+cd codewatch-lite
+pip install .
 python -m codewatch install-hook
-git push        # CodeWatch reviews the commits being pushed, then lets them through or blocks them
 ```
+
+Source code: [github.com/Thundergod2000/codewatcher](https://github.com/Thundergod2000/codewatcher)
 
 ---
 
@@ -58,18 +60,25 @@ Requires Python 3.9+. On recent Linux and macOS systems that block global `pip i
 Run with `python -m codewatch`, so no PATH changes are needed. The `codewatch` command is also installed as a shortcut.
 
 ```bash
-# Scan your latest commit
-python -m codewatch scan
+# Check changes against the previous commit (default base: HEAD~1)
+python -m codewatch check
 
-# Scan against a specific ref
-python -m codewatch scan --diff main
+# Check changes against a branch or other ref
+python -m codewatch check --base main
 
 # Install the pre-push hook (runs on every push)
 python -m codewatch install-hook
 
+# Scan the whole project
+python -m codewatch scan
+
 # JSON output for scripts and CI
-python -m codewatch scan --format json
+python -m codewatch check --base main --format json
 ```
+
+`check` reviews the diff against the chosen base. `scan` checks all tracked supported files in the current project. Both commands honor `codewatch.yaml`, inline ignores, and `.codewatch-baseline.json`.
+
+To let CI enforce the same diff gate, run `python -m codewatch check --base <base-ref> --format json` with the appropriate base ref for your workflow.
 
 ### Exit codes
 
@@ -79,7 +88,7 @@ python -m codewatch scan --format json
 | `1` | At least one ERROR: push blocked |
 | `2` | Tool or config error (fails closed) |
 
-Use `--no-block` to always exit `0`.
+Use `--no-block` with `check` or `scan` to always exit `0`, even when errors are found.
 
 ## Example output
 
@@ -126,13 +135,13 @@ If a finding is a false positive or you need to push anyway, Git's standard esca
 git push --no-verify
 ```
 
-Treat this as an exception. A hook runs on your machine and can always be skipped, so for a guarantee that matters, also run `python -m codewatch scan --diff <base> --format json` in CI. Allowlists and inline ignores are planned (see [Roadmap](#roadmap)).
+Treat this as an exception. A hook runs on your machine and can always be skipped, so for a guarantee that matters, also run `python -m codewatch check --base <base-ref> --format json` in CI. Configuration allow rules, inline ignores, and baselines are available; see [Configuration](#configuration).
 
 ---
 
 ## How the checks work
 
-Python and JS/TS use separate implementations with the same policy: secrets and complexity above 20 block, and everything else warns.
+Python and JS/TS use separate implementations with the same default policy: secrets and complexity above 20 block, and everything else warns. Complexity thresholds can be changed in `codewatch.yaml`.
 
 ### Secrets (blocks)
 
@@ -140,7 +149,7 @@ Regex patterns run over **added lines only**. They flag likely hardcoded passwor
 
 CodeWatch is tuned to prefer a false positive over a missed secret.
 
-### Complexity (blocks above 20, warns above 10)
+### Complexity (defaults: blocks above 20, warns above 10)
 
 - **Python:** uses `radon` on the full file. Only functions whose body intersects the added lines are reported.
 - **JS/TS:** uses tree-sitter to measure each function, arrow function, and method. Score is 1 plus one for each `if`, loop, `catch`, `case`, ternary, and `&&` / `||` / `??`. Nested functions are scored separately, and only functions that intersect added lines are reported.
@@ -170,13 +179,13 @@ Deliberately conservative: an occasional miss is better than noisy false positiv
 - No LLM and no telemetry.
 - Git data is read with the pure-Python `dulwich` library. The scanner never launches `git.exe` or any other executable.
 - Secrets found in your code are never sent anywhere.
-- The source will be published once the security review is complete, so the "no network" claim can be verified by reading the code. <!-- TODO: update when the repo is public -->
+- The [published source](https://github.com/Thundergod2000/codewatcher) is available for inspection.
 
 ## Requirements
 
 - Python 3.9+
 - A Git repository (the Git executable is only needed to push)
-- Installed automatically: `radon`, `vulture`, `tree-sitter`, `tree-sitter-javascript`, `tree-sitter-typescript`, `dulwich`
+- Installed automatically: `radon`, `vulture`, `tree-sitter`, `tree-sitter-javascript`, `tree-sitter-typescript`, `PyYAML`, `dulwich`
 
 No Node.js, npm, or project installation is required.
 
@@ -185,8 +194,8 @@ No Node.js, npm, or project installation is required.
 ## Limitations
 
 - This is static analysis. It is not a type checker or a replacement for ESLint or TypeScript.
-- Findings are limited to new or changed code, so pre-existing issues are not reported.
-- The secrets check reviews the added lines of the pushed range. A secret that is added and removed within the same push may not be detected, and it would still exist in the pushed commits. Per-commit scanning is planned.
+- `check` and the hook review changes in the selected pushed range. `scan` is the whole-project mode and treats all lines in tracked supported files as in scope.
+- In `check` and the hook, the secrets check reviews added lines in the pushed range. A secret that is added and removed within the same push may not be detected, and it would still exist in the pushed commits. Per-commit scanning is planned.
 - Secret detection is pattern-based and tuned to over-report. Expect some false positives, and don't treat a passing scan as proof that no secret is present.
 - Dead-code detection is conservative and only inspects the changed file.
 - Test discovery checks common conventions. Unusual monorepo layouts may need a test file in a recognized location.
@@ -196,40 +205,50 @@ No Node.js, npm, or project installation is required.
 
 ---
 
-## Configuration (v0.2)
+## Configuration
 
-A `.codewatch.yml` in the repo root will customize thresholds and hook behavior:
+An optional `codewatch.yaml` in the repository configures checks and suppressions:
 
 ```yaml
-# .codewatch.yml
-complexity:
-  warn_above: 10
-  block_above: 20
-
-hook:
-  default_branch: origin/main   # base used for new branches
-
-checks:
-  skip:
-    - dead_code      # disable a check entirely
-
-ignore:
-  - vendor/
-  - node_modules/
+version: 1
+thresholds:
+  complexity:
+    warn: 10
+    error: 20
+docstrings:
+  require_exports: true
+  require_components: true
+disable:
+  - dead_code
+allow:
+  - path: "tests/**"
+    checks: [secrets]
+    reason: "Test fixtures use fake credentials"
 ```
 
-Until v0.2, the hook uses the built-in order `origin/main` → `origin/master` → `main` → `master`, then the last 3 commits.
+The file is searched for from the current directory up to the repository root. Complexity thresholds default to warning above 10 and error above 20. `docstrings.require_exports` and `docstrings.require_components` control whether exported APIs and capitalized React components require JSDoc; both default to `true`. `disable` accepts check names: `secrets`, `complexity`, `dead_code`, `test_presence`, and `docstrings`. Each `allow` entry requires a repository-relative `path` and can optionally target check names with `checks` or rule IDs with `rules`. Allow rules can suppress secret findings, so keep them narrow and review them carefully.
+
+Inline comments can ignore findings on the same line, the next line, or a whole file. They cannot suppress secret findings:
+
+```python
+value = legacy_call()  # codewatch: ignore
+# codewatch: ignore-next-line CW-DOC-001
+def public_api():
+    ...
+# codewatch: ignore-file CW-DEAD-001
+```
+
+To accept existing non-secret findings while requiring new code to pass, create and commit a baseline:
+
+```bash
+python -m codewatch baseline write
+python -m codewatch baseline update
+```
+
+The baseline is stored in `.codewatch-baseline.json` and never suppresses secret findings. Review generated changes before committing; CI should not update the baseline automatically. Both commands can be limited to a diff with `--diff REF`.
 
 ## Roadmap
 
-**v0.2**
-- [ ] `.codewatch.yml` configuration and `install-hook --ref`
-- [ ] Allowlists and inline ignore for known false positives
-- [ ] Baseline file, so existing violations don't block adoption on legacy code
-- [ ] Optional full-repo scan on push
-- [ ] Compact summary output and a full report written to a file
-
-**Later**
 - [ ] Per-commit secrets scanning across the whole pushed range
 - [ ] Scanning secrets in config files (`.env`, YAML, JSON)
 - [ ] Detection of secrets exposed to the browser, such as `NEXT_PUBLIC_*`, `VITE_*`, and `REACT_APP_*` variables
@@ -242,12 +261,12 @@ Until v0.2, the hook uses the built-in order `origin/main` → `origin/master` �
 
 ## Support
 
-Need help rolling CodeWatch out across your repositories, tuning rules for your stack, or adding a custom check? Get in touch: <!-- TODO: add contact email or link -->
+Need help or found an issue? [Open an issue](https://github.com/Thundergod2000/codewatcher/issues).
 
 ## Contributing
 
-Issues and feedback are welcome, especially false positives and false negatives with a minimal example. Please never paste real secrets into an issue. <!-- TODO: expand once the repo is public -->
+Contributions and feedback are welcome. For bug reports, include a minimal example and never paste real secrets. See the [published repository](https://github.com/Thundergod2000/codewatcher) to open an issue or pull request.
 
 ## License
 
-<!-- TODO: add license -->
+The package metadata declares the MIT license. See [pyproject.toml](pyproject.toml).
